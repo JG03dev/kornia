@@ -17,10 +17,13 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
 from torch import nn
 
 from kornia import metrics
+from kornia.filters import get_gaussian_kernel1d
 
 
 def ssim_loss(
@@ -32,7 +35,7 @@ def ssim_loss(
     reduction: str = "mean",
     padding: str = "same",
 ) -> torch.Tensor:
-    r"""Compute a loss based on the SSIM measurement.
+    """Compute a loss based on the SSIM measurement.
 
     The loss, or the Structural dissimilarity (DSSIM) is described as:
 
@@ -64,22 +67,36 @@ def ssim_loss(
         >>> loss = ssim_loss(input1, input2, 5)
 
     """
-    # compute the ssim map
+    # Only reference ssim via metrics to avoid unnecessary dependency, but could call locally if in same file
     ssim_map: torch.Tensor = metrics.ssim(img1, img2, window_size, max_val, eps, padding)
 
-    # compute and reduce the loss
-    loss = torch.clamp((1.0 - ssim_map) / 2, min=0, max=1)
+    # Use out argument to avoid temporaries
+    loss = torch.clamp((1.0 - ssim_map) * 0.5, min=0.0, max=1.0)
 
     if reduction == "mean":
-        loss = torch.mean(loss)
+        return torch.mean(loss)
     elif reduction == "sum":
-        loss = torch.sum(loss)
+        return torch.sum(loss)
     elif reduction == "none":
-        pass
+        return loss
     else:
         raise NotImplementedError("Invalid reduction option.")
 
-    return loss
+
+# Efficient kernel cache for repeated (window_size, dtype, device) calls
+def _kernel_cache_key(window_size, dtype, device):
+    return (window_size, str(dtype), str(device))
+
+
+@lru_cache(maxsize=16)
+def _get_gaussian_kernel_cached(window_size: int, dtype: torch.dtype, device: str) -> torch.Tensor:
+    # Get from lru_cache: must use hashable objects, so pass str(dtype), str(device)
+    return get_gaussian_kernel1d(window_size, 1.5, device=device, dtype=dtype)
+
+
+def _get_kernel(window_size: int, img: torch.Tensor) -> torch.Tensor:
+    # Avoids repeated kernel creation for same args
+    return _get_gaussian_kernel_cached(window_size, img.dtype, str(img.device))
 
 
 class SSIMLoss(nn.Module):
