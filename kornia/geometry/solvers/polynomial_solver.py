@@ -225,7 +225,7 @@ def solve_cubic(coeffs: Tensor) -> Tensor:
 
 
 def multiply_deg_one_poly(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    r"""Multiply two polynomials of the first order [@nister2004efficient].
+    """Multiply two polynomials of the first order [@nister2004efficient].
 
     Args:
         a: a first order polynomial for variables :math:`(x,y,z,1)`.
@@ -235,19 +235,31 @@ def multiply_deg_one_poly(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         degree 2 poly with the order :math:`(x^2, x*y, x*z, x, y^2, y*z, y, z^2, z, 1)`.
 
     """
-    return stack(
-        [
-            a[:, 0] * b[:, 0],
-            a[:, 0] * b[:, 1] + a[:, 1] * b[:, 0],
-            a[:, 0] * b[:, 2] + a[:, 2] * b[:, 0],
-            a[:, 0] * b[:, 3] + a[:, 3] * b[:, 0],
-            a[:, 1] * b[:, 1],
-            a[:, 1] * b[:, 2] + a[:, 2] * b[:, 1],
-            a[:, 1] * b[:, 3] + a[:, 3] * b[:, 1],
-            a[:, 2] * b[:, 2],
-            a[:, 2] * b[:, 3] + a[:, 3] * b[:, 2],
-            a[:, 3] * b[:, 3],
-        ],
+    # Pre-extract all columns to avoid repeated indexing
+    a0 = a[:, 0]
+    a1 = a[:, 1]
+    a2 = a[:, 2]
+    a3 = a[:, 3]
+    b0 = b[:, 0]
+    b1 = b[:, 1]
+    b2 = b[:, 2]
+    b3 = b[:, 3]
+
+    # Pre-allocate and compute directly in a single stack call
+    res0 = a0 * b0
+    res1 = a0 * b1 + a1 * b0
+    res2 = a0 * b2 + a2 * b0
+    res3 = a0 * b3 + a3 * b0
+    res4 = a1 * b1
+    res5 = a1 * b2 + a2 * b1
+    res6 = a1 * b3 + a3 * b1
+    res7 = a2 * b2
+    res8 = a2 * b3 + a3 * b2
+    res9 = a3 * b3
+
+    # Use torch.stack to combine the results
+    return torch.stack(
+        [res0, res1, res2, res3, res4, res5, res6, res7, res8, res9],
         dim=-1,
     )
 
