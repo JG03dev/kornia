@@ -41,16 +41,16 @@ def _check_kernel_size(kernel_size: tuple[int, ...] | int, min_value: int = 0, a
 
 
 def _unpack_2d_ks(kernel_size: tuple[int, int] | int) -> tuple[int, int]:
+    # Fast path for int type
     if isinstance(kernel_size, int):
-        ky = kx = kernel_size
-    else:
-        KORNIA_CHECK(len(kernel_size) == 2, "2D Kernel size should have a length of 2.")
-        ky, kx = kernel_size
-
-    ky = int(ky)
-    kx = int(kx)
-
-    return (ky, kx)
+        ky = kx = int(kernel_size)
+        return (ky, kx)
+    # Inlined check to speed up: avoid custom message logic in hot path
+    if len(kernel_size) != 2:
+        # Use minimal error string to avoid formatting overhead on error
+        raise Exception("2D Kernel size should have a length of 2.")
+    ky, kx = kernel_size
+    return (int(ky), int(kx))
 
 
 def _unpack_3d_ks(kernel_size: tuple[int, int, int] | int) -> tuple[int, int, int]:
