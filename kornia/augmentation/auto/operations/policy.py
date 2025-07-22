@@ -25,8 +25,11 @@ from kornia.augmentation.container.base import ImageSequentialBase, TransformMat
 from kornia.augmentation.container.ops import InputSequentialOps
 from kornia.augmentation.container.params import ParamItem
 from kornia.augmentation.utils import _transform_input, override_parameters
-from kornia.core import Module, Tensor, as_tensor
+from kornia.core import Module, Tensor, as_tensor, eye
 from kornia.utils import eye_like
+
+# Cache for identity matrices, keyed by (n, device, dtype)
+_identity_matrix_cache: Dict[Tuple[int, Any, Any], Tensor] = {}
 
 
 class PolicySequential(TransformMatrixMinIn, ImageSequentialBase):
@@ -135,3 +138,10 @@ class PolicySequential(TransformMatrixMinIn, ImageSequentialBase):
             input = InputSequentialOps.transform(input, module=module, param=param, extra_args=extra_args)
             self._update_transform_matrix_by_module(module)
         return input
+
+
+def _get_identity_matrix_cached(n: int, device: Any, dtype: Any) -> Tensor:
+    key = (n, device, dtype)
+    if key not in _identity_matrix_cache:
+        _identity_matrix_cache[key] = eye(n, device=device, dtype=dtype)
+    return _identity_matrix_cache[key]
