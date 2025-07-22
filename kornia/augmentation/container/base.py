@@ -48,7 +48,7 @@ class BasicSequentialBase(nn.Sequential):
         for idx, mod in enumerate(args):
             if not isinstance(mod, Module):
                 raise NotImplementedError(f"Only Module are supported at this moment. Got {mod}.")
-            _args.update({f"{mod.__class__.__name__}_{idx}": mod})
+            _args[f"{mod.__class__.__name__}_{idx}"] = mod
         super().__init__(_args)
         self._params: Optional[List[ParamItem]] = None
 
@@ -104,10 +104,13 @@ class BasicSequentialBase(nn.Sequential):
             yield modules[idx]
 
     def get_children_by_params(self, params: List[ParamItem]) -> Iterator[Tuple[str, Module]]:
-        modules = list(self.named_children())
-        # TODO: Wrong params passed here when nested ImageSequential
+        # Optimize: Precompute key-to-index mapping only once.
+        children = list(self.named_children())
+        name_to_idx = {name: i for i, (name, _) in enumerate(children)}
         for param in params:
-            yield modules[list(dict(self.named_children()).keys()).index(param.name)]
+            idx = name_to_idx.get(param.name)
+            if idx is not None:
+                yield children[idx]
 
     def get_params_by_module(self, named_modules: Iterator[Tuple[str, Module]]) -> Iterator[ParamItem]:
         # This will not take module._params
