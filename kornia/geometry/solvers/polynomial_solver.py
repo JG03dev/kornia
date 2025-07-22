@@ -258,7 +258,7 @@ def multiply_deg_one_poly(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def multiply_deg_two_one_poly(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    r"""Multiply two polynomials a and b of degrees two and one [@nister2004efficient].
+    """Multiply two polynomials a and b of degrees two and one [@nister2004efficient].
 
     Args:
         a: a second degree poly for variables :math:`(x^2, x*y, x*z, x, y^2, y*z, y, z^2, z, 1)`.
@@ -270,28 +270,75 @@ def multiply_deg_two_one_poly(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
         x*y*z, x*y, x*z^2, x*z, x, y*z^2, y*z, y, z^3, z^2, z, 1)`.
 
     """
+    # Compute all necessary products once to avoid redundant computation
+    a0, a1, a2, a3, a4, a5, a6, a7, a8, a9 = [a[:, i] for i in range(10)]
+    b0, b1, b2, b3 = [b[:, i] for i in range(4)]
+
+    # Precompute products to reuse between terms:
+    a0b0 = a0 * b0
+    a4b1 = a4 * b1
+    a0b1 = a0 * b1
+    a1b0 = a1 * b0
+    a1b1 = a1 * b1
+    a4b0 = a4 * b0
+    a0b2 = a0 * b2
+    a2b0 = a2 * b0
+    a0b3 = a0 * b3
+    a3b0 = a3 * b0
+    a4b2 = a4 * b2
+    a5b1 = a5 * b1
+    a4b3 = a4 * b3
+    a6b1 = a6 * b1
+    a1b2 = a1 * b2
+    a2b1 = a2 * b1
+    a5b0 = a5 * b0
+    a1b3 = a1 * b3
+    a3b1 = a3 * b1
+    a6b0 = a6 * b0
+    a2b2 = a2 * b2
+    a7b0 = a7 * b0
+    a2b3 = a2 * b3
+    a3b2 = a3 * b2
+    a8b0 = a8 * b0
+    a3b3 = a3 * b3
+    a9b0 = a9 * b0
+    a5b2 = a5 * b2
+    a7b1 = a7 * b1
+    a5b3 = a5 * b3
+    a6b2 = a6 * b2
+    a8b1 = a8 * b1
+    a6b3 = a6 * b3
+    a9b1 = a9 * b1
+    a7b2 = a7 * b2
+    a7b3 = a7 * b3
+    a8b2 = a8 * b2
+    a8b3 = a8 * b3
+    a9b2 = a9 * b2
+    a9b3 = a9 * b3
+
+    # Stack results
     return stack(
         [
-            a[:, 0] * b[:, 0],
-            a[:, 4] * b[:, 1],
-            a[:, 0] * b[:, 1] + a[:, 1] * b[:, 0],
-            a[:, 1] * b[:, 1] + a[:, 4] * b[:, 0],
-            a[:, 0] * b[:, 2] + a[:, 2] * b[:, 0],
-            a[:, 0] * b[:, 3] + a[:, 3] * b[:, 0],
-            a[:, 4] * b[:, 2] + a[:, 5] * b[:, 1],
-            a[:, 4] * b[:, 3] + a[:, 6] * b[:, 1],
-            a[:, 1] * b[:, 2] + a[:, 2] * b[:, 1] + a[:, 5] * b[:, 0],
-            a[:, 1] * b[:, 3] + a[:, 3] * b[:, 1] + a[:, 6] * b[:, 0],
-            a[:, 2] * b[:, 2] + a[:, 7] * b[:, 0],
-            a[:, 2] * b[:, 3] + a[:, 3] * b[:, 2] + a[:, 8] * b[:, 0],
-            a[:, 3] * b[:, 3] + a[:, 9] * b[:, 0],
-            a[:, 5] * b[:, 2] + a[:, 7] * b[:, 1],
-            a[:, 5] * b[:, 3] + a[:, 6] * b[:, 2] + a[:, 8] * b[:, 1],
-            a[:, 6] * b[:, 3] + a[:, 9] * b[:, 1],
-            a[:, 7] * b[:, 2],
-            a[:, 7] * b[:, 3] + a[:, 8] * b[:, 2],
-            a[:, 8] * b[:, 3] + a[:, 9] * b[:, 2],
-            a[:, 9] * b[:, 3],
+            a0b0,  # x^3
+            a4b1,  # y^3
+            a0b1 + a1b0,  # x^2*y
+            a1b1 + a4b0,  # x*y^2
+            a0b2 + a2b0,  # x^2*z
+            a0b3 + a3b0,  # x^2
+            a4b2 + a5b1,  # y^2*z
+            a4b3 + a6b1,  # y^2
+            a1b2 + a2b1 + a5b0,  # x*y*z
+            a1b3 + a3b1 + a6b0,  # x*y
+            a2b2 + a7b0,  # x*z^2
+            a2b3 + a3b2 + a8b0,  # x*z
+            a3b3 + a9b0,  # x
+            a5b2 + a7b1,  # y*z^2
+            a5b3 + a6b2 + a8b1,  # y*z
+            a6b3 + a9b1,  # y
+            a7b2,  # z^3
+            a7b3 + a8b2,  # z^2
+            a8b3 + a9b2,  # z
+            a9b3,  # 1
         ],
         dim=-1,
     )
