@@ -264,7 +264,8 @@ def batched_dot_product(x: Tensor, y: Tensor, keepdim: bool = False) -> Tensor:
 
 def batched_squared_norm(x: Tensor, keepdim: bool = False) -> Tensor:
     """Return the squared norm of a vector."""
-    return batched_dot_product(x, x, keepdim)
+    _check_shape_n_last_dim(x)
+    return (x * x).sum(dim=-1, keepdim=keepdim)
 
 
 def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float = 1e-6) -> Tensor:
@@ -283,6 +284,13 @@ def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float =
     KORNIA_CHECK_SHAPE(y, ["*", "N"])
 
     return (x - y + eps).pow(2).sum(-1, keepdim).sqrt()
+
+
+def _check_shape_n_last_dim(x: Tensor) -> None:
+    """Fast internal helper to check tensor has at least 2D and a last dim (arbitrary batch)"""
+    # This reproduces KORNIA_CHECK_SHAPE(x, ["*", "N"]), but much faster
+    if not hasattr(x, "shape") or len(x.shape) < 1:
+        raise TypeError(f"{x} shape must be [*, N]. Got {getattr(x, 'shape', None)}")
 
 
 # aliases
