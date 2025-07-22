@@ -15,6 +15,9 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
+from functools import lru_cache
 from typing import List
 
 import torch
@@ -39,7 +42,7 @@ def ssim(
     eps: float = 1e-12,
     padding: str = "same",
 ) -> torch.Tensor:
-    r"""Compute the Structural Similarity (SSIM) index map between two images.
+    """Compute the Structural Similarity (SSIM) index map between two images.
 
     Measures the (SSIM) index between each element in the input `x` and target `y`.
 
@@ -47,14 +50,14 @@ def ssim(
 
     .. math::
 
-      \text{SSIM}(x, y) = \frac{(2\mu_x\mu_y+c_1)(2\sigma_{xy}+c_2)}
-      {(\mu_x^2+\mu_y^2+c_1)(\sigma_x^2+\sigma_y^2+c_2)}
+      \text{SSIM}(x, y) = \frac{(2\\mu_x\\mu_y+c_1)(2\\sigma_{xy}+c_2)}
+      {(\\mu_x^2+\\mu_y^2+c_1)(\\sigma_x^2+\\sigma_y^2+c_2)}
 
     where:
       - :math:`c_1=(k_1 L)^2` and :math:`c_2=(k_2 L)^2` are two variables to
         stabilize the division with weak denominator.
       - :math:`L` is the dynamic range of the pixel-values (typically this is
-        :math:`2^{\#\text{bits per pixel}}-1`).
+        :math:`2^{\\#\text{bits per pixel}}-1`).
 
     Args:
         img1: the first input image with shape :math:`(B, C, H, W)`.
@@ -74,34 +77,26 @@ def ssim(
         >>> ssim_map = ssim(input1, input2, 5)  # 1x4x5x5
 
     """
+    # -- Input validation (not a bottleneck) --
     if not isinstance(img1, torch.Tensor):
         raise TypeError(f"Input img1 type is not a torch.Tensor. Got {type(img1)}")
-
     if not isinstance(img2, torch.Tensor):
         raise TypeError(f"Input img2 type is not a torch.Tensor. Got {type(img2)}")
-
     if not isinstance(max_val, float):
         raise TypeError(f"Input max_val type is not a float. Got {type(max_val)}")
+    if img1.ndim != 4 or img2.ndim != 4:
+        raise ValueError(f"Invalid img1/img2 shape, expect BxCxHxW. Got: {img1.shape} and {img2.shape}")
+    if img1.shape != img2.shape:
+        raise ValueError(f"img1 and img2 must have same shape. Got: {img1.shape} and {img2.shape}")
 
-    if not len(img1.shape) == 4:
-        raise ValueError(f"Invalid img1 shape, we expect BxCxHxW. Got: {img1.shape}")
+    kernel = _get_kernel(window_size, img1)
 
-    if not len(img2.shape) == 4:
-        raise ValueError(f"Invalid img2 shape, we expect BxCxHxW. Got: {img2.shape}")
+    C1 = (0.01 * max_val) ** 2
+    C2 = (0.03 * max_val) ** 2
 
-    if not img1.shape == img2.shape:
-        raise ValueError(f"img1 and img2 shapes must be the same. Got: {img1.shape} and {img2.shape}")
-
-    # prepare kernel
-    kernel: torch.Tensor = get_gaussian_kernel1d(window_size, 1.5, device=img1.device, dtype=img1.dtype)
-
-    # compute coefficients
-    C1: float = (0.01 * max_val) ** 2
-    C2: float = (0.03 * max_val) ** 2
-
-    # compute local mean per channel
-    mu1: torch.Tensor = filter2d_separable(img1, kernel, kernel)
-    mu2: torch.Tensor = filter2d_separable(img2, kernel, kernel)
+    # --- Compute local means ---
+    mu1 = filter2d_separable(img1, kernel, kernel)
+    mu2 = filter2d_separable(img2, kernel, kernel)
 
     cropping_shape: List[int] = []
     if padding == "valid":
@@ -109,34 +104,52 @@ def ssim(
         cropping_shape = _compute_padding([height, width])
         mu1 = _crop(mu1, cropping_shape)
         mu2 = _crop(mu2, cropping_shape)
-    elif padding == "same":
-        pass
 
-    mu1_sq = mu1**2
-    mu2_sq = mu2**2
-    mu1_mu2 = mu1 * mu2
+    mu1_sq = mu1.mul(mu1)
+    mu2_sq = mu2.mul(mu2)
+    mu1_mu2 = mu1.mul(mu2)
 
-    mu_img1_sq = filter2d_separable(img1**2, kernel, kernel)
-    mu_img2_sq = filter2d_separable(img2**2, kernel, kernel)
-    mu_img1_img2 = filter2d_separable(img1 * img2, kernel, kernel)
+    # --- Compute local variances ---
+    img1_sq = img1.mul(img1)
+    img2_sq = img2.mul(img2)
+    img1_img2 = img1.mul(img2)
+
+    mu_img1_sq = filter2d_separable(img1_sq, kernel, kernel)
+    mu_img2_sq = filter2d_separable(img2_sq, kernel, kernel)
+    mu_img1_img2 = filter2d_separable(img1_img2, kernel, kernel)
 
     if padding == "valid":
         mu_img1_sq = _crop(mu_img1_sq, cropping_shape)
         mu_img2_sq = _crop(mu_img2_sq, cropping_shape)
         mu_img1_img2 = _crop(mu_img1_img2, cropping_shape)
-    elif padding == "same":
-        pass
 
-    # compute local sigma per channel
+    # Compute sigmas (use torch.add/sub for inplace efficiency, though temporaries appear anyway)
     sigma1_sq = mu_img1_sq - mu1_sq
     sigma2_sq = mu_img2_sq - mu2_sq
     sigma12 = mu_img1_img2 - mu1_mu2
 
-    # compute the similarity index map
-    num: torch.Tensor = (2.0 * mu1_mu2 + C1) * (2.0 * sigma12 + C2)
-    den: torch.Tensor = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+    # SSIM calculation
+    num = (2.0 * mu1_mu2 + C1) * (2.0 * sigma12 + C2)
+    den = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
 
+    # The return is the similarity map
     return num / (den + eps)
+
+
+# Efficient kernel cache for repeated (window_size, dtype, device) calls
+def _kernel_cache_key(window_size, dtype, device):
+    return (window_size, str(dtype), str(device))
+
+
+@lru_cache(maxsize=16)
+def _get_gaussian_kernel_cached(window_size: int, dtype: torch.dtype, device: str) -> torch.Tensor:
+    # Get from lru_cache: must use hashable objects, so pass str(dtype), str(device)
+    return get_gaussian_kernel1d(window_size, 1.5, device=device, dtype=dtype)
+
+
+def _get_kernel(window_size: int, img: torch.Tensor) -> torch.Tensor:
+    # Avoids repeated kernel creation for same args
+    return _get_gaussian_kernel_cached(window_size, img.dtype, str(img.device))
 
 
 class SSIM(nn.Module):
