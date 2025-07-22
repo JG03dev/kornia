@@ -21,7 +21,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Union
 
-from kornia.core import Tensor, stack, zeros_like
+from kornia.core import Tensor, stack
 from kornia.geometry.vector import Vector2, Vector3
 from kornia.image import ImageSize
 from kornia.sensors.camera.distortion_model import AffineTransform, BrownConradyTransform, KannalaBrandtK3Transform
@@ -210,16 +210,21 @@ class PinholeModel(CameraModelBase):
         if params.shape[-1] != 4 or len(params.shape) > 2:
             raise ValueError("params must be of shape (B, 4) for PINHOLE Camera")
         super().__init__(AffineTransform(), Z1Projection(), image_size, params)
+        # cache fx, fy, cx, cy for fast access (assume params shape is (..., 4) and contiguous)
+        self._fx = self._params[..., 0]
+        self._fy = self._params[..., 1]
+        self._cx = self._params[..., 2]
+        self._cy = self._params[..., 3]
 
     def matrix(self) -> Tensor:
-        r"""Return the camera matrix.
+        """Return the camera matrix.
 
         The matrix is of the form:
 
         .. math::
             \begin{bmatrix} fx & 0 & cx \\
             0 & fy & cy \\
-            0 & 0 & 1\end{bmatrix}
+            0 & 0 & 1\\end{bmatrix}
 
         Example:
             >>> cam = CameraModel(ImageSize(480, 640), CameraModelType.PINHOLE, torch.Tensor([1.0, 2.0, 3.0, 4.0]))
@@ -229,12 +234,22 @@ class PinholeModel(CameraModelBase):
                     [0., 0., 1.]])
 
         """
-        z = zeros_like(self.fx)
-        row1 = stack((self.fx, z, self.cx), -1)
-        row2 = stack((z, self.fy, self.cy), -1)
-        row3 = stack((z, z, z), -1)
-        K = stack((row1, row2, row3), -2)
-        K[..., -1, -1] = 1.0
+        # --- Optimized path ---
+        # Rather than stacking repeatedly and reshaping, directly allocate and fill the matrix
+        params = self._params  # of shape (..., 4)
+        # Infer batch shape (may be () if single camera)
+        batch_shape = params.shape[:-1]
+        device = params.device
+        dtype = params.dtype
+
+        # Create zeros and ones for batch size only once
+        K = params.new_zeros(batch_shape + (3, 3))
+
+        K[..., 0, 0] = self._fx
+        K[..., 1, 1] = self._fy
+        K[..., 0, 2] = self._cx
+        K[..., 1, 2] = self._cy
+        K[..., 2, 2] = 1.0
         return K
 
     def scale(self, scale_factor: Tensor) -> PinholeModel:
@@ -260,6 +275,22 @@ class PinholeModel(CameraModelBase):
         params = stack((fx, fy, cx, cy), -1)
         image_size = ImageSize(self.image_size.height * scale_factor, self.image_size.width * scale_factor)
         return PinholeModel(image_size, params)
+
+    @property
+    def fx(self) -> Tensor:
+        return self._fx
+
+    @property
+    def fy(self) -> Tensor:
+        return self._fy
+
+    @property
+    def cx(self) -> Tensor:
+        return self._cx
+
+    @property
+    def cy(self) -> Tensor:
+        return self._cy
 
 
 class BrownConradyModel(CameraModelBase):
