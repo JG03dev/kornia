@@ -464,3 +464,9 @@ def _handle_invalid_range(msg: Optional[str], raises: bool, min_val: float | Ten
     if raises:
         raise ValueError(err_msg)
     return False
+
+
+def _check_hom_transform(x: Tensor, name: str):
+    shape = x.shape
+    if not ((x.dim() in (2, 3)) and (shape[-2:] == (4, 4))):
+        raise ValueError(f"Input {name} must be a of the shape Nx4x4 or 4x4. Got {shape}")
