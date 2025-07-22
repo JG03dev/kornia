@@ -70,6 +70,9 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
+    # As this function is not the main bottleneck compared to solve_cubic,
+    # minor tweaks: use enumerate, avoid repeated .shape, fast-path for fully implicit.
+    # Otherwise, leave logic unaltered for correctness.
     if "*" == shape[0]:
         shape_to_check = shape[1:]
         x_shape_to_check = x.shape[-len(shape) + 1 :]
@@ -86,14 +89,10 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         else:
             return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
+    for i, dim_ in enumerate(shape_to_check):
         if not dim_.isnumeric():
             continue
-        dim = int(dim_)
-        if x_shape_to_check[i] != dim:
+        if x_shape_to_check[i] != int(dim_):
             if raises:
                 raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
             else:
