@@ -118,11 +118,12 @@ def KORNIA_CHECK(condition: bool, msg: Optional[str] = None, raises: bool = True
         True
 
     """
-    if not condition:
-        if raises:
-            raise Exception(f"{condition} not true.\n{msg}")
-        return False
-    return True
+    # Fast path exit for passing case
+    if condition:
+        return True
+    if raises:
+        raise Exception(f"{condition} not true.\n{msg}")
+    return False
 
 
 def KORNIA_UNWRAP(maybe_obj: object, typ: Any) -> Any:
