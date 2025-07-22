@@ -31,7 +31,13 @@ RayGroup = Tuple[Tensor, Tensor, Optional[Tensor]]
 
 
 def _is_list_of_str(lst: Sequence[object]) -> TypeGuard[List[str]]:
-    return isinstance(lst, list) and all(isinstance(x, str) for x in lst)
+    # Optimize by early exit for non-list inputs, and for-loop for early rejection
+    if not isinstance(lst, list):
+        return False
+    for x in lst:
+        if not isinstance(x, str):
+            return False
+    return True
 
 
 def _is_list_of_tensors(lst: Sequence[object]) -> TypeGuard[List[Tensor]]:
