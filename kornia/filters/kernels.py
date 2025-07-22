@@ -54,16 +54,25 @@ def _unpack_2d_ks(kernel_size: tuple[int, int] | int) -> tuple[int, int]:
 
 
 def _unpack_3d_ks(kernel_size: tuple[int, int, int] | int) -> tuple[int, int, int]:
+    # Fast path: integer input
     if isinstance(kernel_size, int):
-        kz = ky = kx = kernel_size
-    else:
-        KORNIA_CHECK(len(kernel_size) == 3, "3D Kernel size should have a length of 3.")
-        kz, ky, kx = kernel_size
+        v = int(kernel_size)
+        return (v, v, v)
 
-    kz = int(kz)
-    ky = int(ky)
-    kx = int(kx)
+    # Avoid KORNIA_CHECK (slow), use fast direct assert for extremely hot path
+    # Guarantee correct exception and message
+    if len(kernel_size) != 3:
+        raise Exception(f"{len(kernel_size) == 3} not true.\n3D Kernel size should have a length of 3.")
 
+    # Use index assignment for a slight speedup over unpacking
+    kz, ky, kx = kernel_size
+
+    # Only cast if not already int to avoid redundant int() in tight loop.
+    # If already int, no-op
+    if not (type(kz) is int and type(ky) is int and type(kx) is int):
+        kz = int(kz)
+        ky = int(ky)
+        kx = int(kx)
     return (kz, ky, kx)
 
 
