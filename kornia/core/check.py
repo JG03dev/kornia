@@ -70,34 +70,59 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
-        shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
-        shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
+    x_shape = x.shape
+
+    # Fast path for ["*", "N"]
+    if shape == ["*", "N"]:
+        # Only check last dim
+        n = x_shape[-1] if len(x_shape) >= 1 else None
+        if n is None:
+            if raises:
+                raise TypeError(f"{x} shape must be [{shape}]. Got {x_shape}")
+            return False
+        return True
+
+    # Fast path for ["*", "N", ...] -- If first ele is '*'
+    if shape and shape[0] == "*":
+        num_check = len(shape) - 1
+        if num_check == 0:
+            x_shape_to_check = ()
+            shape_to_check = ()
+        else:
+            x_shape_to_check = x_shape[-num_check:]
+            shape_to_check = shape[1:]
+    # Fast path for [..., "N", "*"]
+    elif shape and shape[-1] == "*":
+        num_check = len(shape) - 1
+        if num_check == 0:
+            x_shape_to_check = ()
+            shape_to_check = ()
+        else:
+            x_shape_to_check = x_shape[:num_check]
+            shape_to_check = shape[:-1]
     else:
+        x_shape_to_check = x_shape
         shape_to_check = shape
-        x_shape_to_check = x.shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
-            raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+            raise TypeError(f"{x} shape must be [{shape}]. Got {x_shape}")
+        return False
 
+    # Avoid using isnumeric, since the only possible valid numeric would be all-digit strings and most are not
     for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
-            continue
-        dim = int(dim_)
-        if x_shape_to_check[i] != dim:
-            if raises:
-                raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
+        dim_ = shape_to_check[i]
+        if dim_ and (dim_[0] >= "0" and dim_[0] <= "9"):
+            # Only check numeric, skip signed cases for now. Implicit spec only supports literal positive ints.
+            try:
+                dim = int(dim_)
+            except Exception:
+                continue  # fallback to generic logic, for robustness
+            if x_shape_to_check[i] != dim:
+                if raises:
+                    raise TypeError(f"{x} shape must be [{shape}]. Got {x_shape}")
                 return False
+        # else: symbolic; skip check
     return True
 
 
