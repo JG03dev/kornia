@@ -15,15 +15,18 @@
 # limitations under the License.
 #
 
-from typing import Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 
 from kornia.core import Tensor, eye, zeros
 
+# Cache for identity matrices, keyed by (n, device, dtype)
+_identity_matrix_cache: Dict[Tuple[int, Any, Any], Tensor] = {}
+
 
 def eye_like(n: int, input: Tensor, shared_memory: bool = False) -> Tensor:
-    r"""Return a 2-D tensor with ones on the diagonal and zeros elsewhere with the same batch size as the input.
+    """Return a 2-D tensor with ones on the diagonal and zeros elsewhere with the same batch size as the input.
 
     Args:
         n: the number of rows :math:`(N)`.
@@ -45,9 +48,11 @@ def eye_like(n: int, input: Tensor, shared_memory: bool = False) -> Tensor:
     if len(input.shape) < 1:
         raise AssertionError(input.shape)
 
-    identity = eye(n, device=input.device).type(input.dtype)
-
-    return identity[None].expand(input.shape[0], n, n) if shared_memory else identity[None].repeat(input.shape[0], 1, 1)
+    # Use caching for identity matrix to reduce repetitive allocation/casting
+    identity = _get_identity_matrix_cached(n, input.device, input.dtype)
+    identity = identity  # shape: (n, n)
+    batch = input.shape[0]
+    return identity.unsqueeze(0).expand(batch, n, n)  # always use expand for speed/memory
 
 
 def vec_like(n: int, tensor: Tensor, shared_memory: bool = False) -> Tensor:
@@ -135,3 +140,10 @@ def differentiable_clipping(
     if min_val is not None:
         output[output < min_val] = scale * (torch.exp(output[output < min_val] - min_val) - 1.0) + min_val
     return output
+
+
+def _get_identity_matrix_cached(n: int, device: Any, dtype: Any) -> Tensor:
+    key = (n, device, dtype)
+    if key not in _identity_matrix_cache:
+        _identity_matrix_cache[key] = eye(n, device=device, dtype=dtype)
+    return _identity_matrix_cache[key]
