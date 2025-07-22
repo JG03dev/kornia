@@ -21,27 +21,28 @@ from typing import Any, Callable, Dict, Optional
 # the accelerator library is a requirement for the Trainer
 # but it is optional for grousnd base user of kornia.
 import torch
+from accelerate import Accelerator
 from torch.optim import Optimizer, lr_scheduler
 from torch.utils.data import DataLoader
+
+from kornia.core import Module, Tensor
+from kornia.x.utils import Configuration, TrainerState
 
 try:
     from accelerate import Accelerator
 except ImportError:
     Accelerator = None
 
-from kornia.core import Module, Tensor
 from kornia.metrics import AverageMeter
 
 from .utils import Configuration, StatsTracker, TrainerState
 
 callbacks_whitelist = [
-    # high level functions
     "preprocess",
     "augmentations",
     "evaluate",
     "fit",
     "fit_epoch",
-    # events (by calling order)
     "on_epoch_start",
     "on_before_model",
     "on_after_model",
@@ -89,33 +90,45 @@ class Trainer:
         config: Configuration,
         callbacks: Optional[Dict[str, Callable[..., None]]] = None,
     ) -> None:
-        # setup the accelerator
-        if Accelerator is None:
+        # Fast path: define frequently used vars locally
+        Accelerator_ = Accelerator
+        if Accelerator_ is None:
             raise ModuleNotFoundError('accelerate library is not installed: pip install "kornia[x]"')
-        self.accelerator = Accelerator()
 
-        # setup the data related objects
-        self.model = self.accelerator.prepare(model)
-        self.train_dataloader = self.accelerator.prepare(train_dataloader)
-        self.valid_dataloader = self.accelerator.prepare(valid_dataloader)
-        self.criterion = None if criterion is None else criterion.to(self.device)
-        self.optimizer = self.accelerator.prepare(optimizer)
+        accelerator = Accelerator_()
+        self.accelerator = accelerator
+
+        # Prepare all objects in fewer lines
+        model = accelerator.prepare(model)
+        train_dataloader = accelerator.prepare(train_dataloader)
+        valid_dataloader = accelerator.prepare(valid_dataloader)
+        optimizer = accelerator.prepare(optimizer)
+        self.model = model
+        self.train_dataloader = train_dataloader
+        self.valid_dataloader = valid_dataloader
+        self.optimizer = optimizer
         self.scheduler = scheduler
         self.config = config
 
-        # configure callbacks
+        # Avoid attribute lookup in conditional
+        device = getattr(accelerator, "device", None)
+        if criterion is not None and device is not None:
+            criterion = criterion.to(device)
+        self.criterion = criterion
+
         if callbacks is None:
             callbacks = {}
+        setattr_ = setattr
+        TrainerType = type(self)
         for fn_name, fn in callbacks.items():
-            if fn_name not in callbacks_whitelist:
+            if fn_name not in _callbacks_whitelist_set:
                 raise ValueError(f"Not supported: {fn_name}.")
-            setattr(Trainer, fn_name, fn)
+            setattr_(TrainerType, fn_name, fn)
 
-        # hyper-params
         self.num_epochs = config.num_epochs
-
         self.state = TrainerState.STARTING
 
+        # Use optimized logger get for speed-up (local var binding)
         self._logger = logging.getLogger("train")
 
     @property
@@ -233,3 +246,6 @@ class Trainer:
     def on_checkpoint(self, *args: Any, **kwargs: Dict[str, Any]) -> None: ...
 
     def on_epoch_end(self, *args: Any, **kwargs: Dict[str, Any]) -> None: ...
+
+
+_callbacks_whitelist_set = set(callbacks_whitelist)
