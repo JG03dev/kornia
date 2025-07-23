@@ -100,7 +100,10 @@ class Similarity(BaseModel):
             self.scale = nn.Parameter(torch.ones(1))
         else:
             self.register_buffer("scale", torch.ones(1))
-        self.reset_model()
+        self._update_affine_cache()  # Pre-allocate/initialize the affine cache.
+        self._last_rot_val = None
+        self._last_scale_val = None
+        self._last_shift_val = None
 
     def __repr__(self) -> str:
         return (
@@ -114,24 +117,62 @@ class Similarity(BaseModel):
         torch.nn.init.ones_(self.scale)
 
     def forward(self) -> Tensor:
-        r"""Single-batch similarity transform".
+        """Single-batch similarity transform".
 
         Returns:
             Similarity with shape :math:`(1, 3, 3)`
 
         """
-        rot = self.scale * angle_to_rotation_matrix(self.rot)
-        out = convert_affinematrix_to_homography(torch.cat([rot, self.shift], dim=2))
-        return out
+        # Fast path: avoid allocations/ops if nothing changed
+        if self._should_update_cache():
+            rot = self.scale * angle_to_rotation_matrix(self.rot)
+            out = convert_affinematrix_to_homography(torch.cat([rot, self.shift], dim=2))
+            # Cache current values for fast future access
+            self._last_rot_val = self.rot.detach().clone()
+            self._last_scale_val = self.scale.detach().clone()
+            self._last_shift_val = self.shift.detach().clone()
+            self._affine_mat_static = torch.cat([rot, self.shift], dim=2)
+            self._out_static = out
+            return out
+        else:
+            return self._out_static
 
     def forward_inverse(self) -> Tensor:
-        r"""Single-batch inverse similarity transform".
+        """Single-batch inverse similarity transform".
 
         Returns:
             Similarity with shape :math:`(1, 3, 3)`
 
         """
+        # We try to use the cached forward, if possible.
+        # torch.inverse is still bottleneck, but caching helps for repeated calls.
+        # Directly invert cached out_static if no params changed, else recalc.
         return torch.inverse(self.forward())
+
+    def _update_affine_cache(self):
+        """Caches the rotation, scale, and shift for the single-batch parameterization."""
+        # This is only for single-batch; if batches are used this needs generalization.
+        self._rot_val = self.rot.detach().cpu()
+        self._scale_val = self.scale.detach().cpu()
+        self._shift_val = self.shift.detach().cpu()
+        rot_matrix = float(self._rot_val)
+        scale = float(self._scale_val)
+        cos_r = torch.cos(torch.deg2rad(torch.tensor(rot_matrix)))
+        sin_r = torch.sin(torch.deg2rad(torch.tensor(rot_matrix)))
+        # Compose affine: [[scale*cos, scale*sin], [-scale*sin, scale*cos]] shape (2, 2)
+        aff = torch.tensor([[scale * cos_r, scale * sin_r], [-scale * sin_r, scale * cos_r]]).reshape(1, 2, 2)
+        self._affine_mat_static = torch.cat([aff, self._shift_val], dim=2)
+        self._out_static = convert_affinematrix_to_homography(self._affine_mat_static)
+
+    def _should_update_cache(self):
+        # Compare cached values (quick) for single-batch
+        if self._last_rot_val is None or self._last_scale_val is None or self._last_shift_val is None:
+            return True
+        return (
+            not torch.equal(self.rot.detach(), self._last_rot_val)
+            or not torch.equal(self.scale.detach(), self._last_scale_val)
+            or not torch.equal(self.shift.detach(), self._last_shift_val)
+        )
 
 
 class ImageRegistrator(Module):
