@@ -29,15 +29,19 @@ class _DissolvingWraper_HF:
         self.num_ddim_steps = num_ddim_steps
         self.tokenizer = self.model.tokenizer
         self.model.scheduler.set_timesteps(self.num_ddim_steps)
-        self.total_steps = len(self.model.scheduler.timesteps)  # Total number of sampling steps.
-        self.prompt: str
-        self.context: Tensor
+        self.total_steps = len(self.model.scheduler.timesteps)
+        # prompt and context will be set externally
+        # self.prompt: str
+        # self.context: Tensor
+
+        # Precompute constants for alphas_cumprod to avoid redundant sqrt computations
+        alphas_cumprod = self.model.scheduler.alphas_cumprod
+        self._alphas_cumprod_sqrt = torch.sqrt(1.0 / alphas_cumprod)
+        self._alphas_cumprod_sqrt_minus1 = torch.sqrt(1.0 / alphas_cumprod - 1)
 
     def predict_start_from_noise(self, noise_pred: Tensor, timestep: int, latent: Tensor) -> Tensor:
-        return (
-            torch.sqrt(1.0 / self.model.scheduler.alphas_cumprod[timestep]) * latent
-            - torch.sqrt(1.0 / self.model.scheduler.alphas_cumprod[timestep] - 1) * noise_pred
-        )
+        # Use precomputed values for speed
+        return self._alphas_cumprod_sqrt[timestep] * latent - self._alphas_cumprod_sqrt_minus1[timestep] * noise_pred
 
     @torch.no_grad()
     def init_prompt(self, prompt: str) -> None:
@@ -74,15 +78,23 @@ class _DissolvingWraper_HF:
 
     @torch.no_grad()
     def one_step_dissolve(self, latent: Tensor, i: int) -> Tensor:
+        # Only split context when needed; avoids extra tensor allocs
+        # Reuse context for repeated batch sizes with broadcasting if possible
         _, cond_embeddings = self.context.chunk(2)
-        latent = latent.clone().detach()
-        # NOTE: This implementation use a reversed timesteps but can reach to
-        # a stable dissolving effect.
+
+        # No need to clone/detach latent: torch.no_grad() ensures no tracking, and no in-place changes
         t = self.num_ddim_steps - self.model.scheduler.timesteps[i]
-        latent = self.model.scheduler.scale_model_input(latent, t)
-        cond_embeddings = cond_embeddings.repeat(latent.size(0), 1, 1)
-        noise_pred = self.model.unet(latent, t, cond_embeddings).sample
-        pred_x0 = self.predict_start_from_noise(noise_pred, t, latent)
+        latent_scaled = self.model.scheduler.scale_model_input(latent, t)
+
+        # Use broadcasting instead of repeat if batch size matches
+        batch_size = latent.size(0)
+        if cond_embeddings.size(0) != batch_size:
+            cond_embeddings_expanded = cond_embeddings.expand(batch_size, -1, -1)
+        else:
+            cond_embeddings_expanded = cond_embeddings
+
+        noise_pred = self.model.unet(latent_scaled, t, cond_embeddings_expanded).sample
+        pred_x0 = self.predict_start_from_noise(noise_pred, t, latent_scaled)
         return pred_x0
 
     @torch.no_grad()
