@@ -251,13 +251,15 @@ class HausdorffERLoss3D(_HausdorffERLossBase):
 
     def get_kernel(self) -> Tensor:
         """Get kernel for image morphology convolution."""
-        cross = tensor([[[0, 1, 0], [1, 1, 1], [0, 1, 0]]])
-        bound = tensor([[[0, 0, 0], [0, 1, 0], [0, 0, 0]]])
-        # NOTE: The original repo claimed it shaped as (3, 1, 3, 3)
-        #    which Jian suspect it is wrongly implemented.
-        # https://github.com/PatRyg99/HausdorffLoss/blob/9f580acd421af648e74b45d46555ccb7a876c27c/hausdorff_loss.py#L94
-        kernel = stack([bound, cross, bound], 1) * (1 / 7)
-        return kernel[None]
+        if not hasattr(self, "_kernel_cache"):
+            cross = tensor([[[0, 1, 0], [1, 1, 1], [0, 1, 0]]])
+            bound = tensor([[[0, 0, 0], [0, 1, 0], [0, 0, 0]]])
+            # NOTE: The original repo claimed it shaped as (3, 1, 3, 3)
+            #    which Jian suspect it is wrongly implemented.
+            # https://github.com/PatRyg99/HausdorffLoss/blob/9f580acd421af648e74b45d46555ccb7a876c27c/hausdorff_loss.py#L94
+            kernel = stack([bound, cross, bound], 1) * (1 / 7)
+            self._kernel_cache = kernel[None]
+        return self._kernel_cache
 
     def forward(self, pred: Tensor, target: Tensor) -> Tensor:
         """Compute 3D Hausdorff loss.
