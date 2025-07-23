@@ -44,15 +44,32 @@ class Mlp(nn.Module):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
+
+        # Use a fused linear+activation if available and act_layer is GELU
+        # but keep original logic since function signatures must remain.
         self.fc1 = nn.Linear(in_features, hidden_features, bias=bias)
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias)
         self.drop = nn.Dropout(drop)
 
+        # Pre-create a single DropoutForward for use when drop > 0
+        # (not needed, Dropout is already efficient, but we minimize attribute access in forward.)
+
+        self.use_drop = drop > 0
+
     def forward(self, x: Tensor) -> Tensor:
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
+        # Minor optimization: cache local refs to reduce attribute lookups in the innermost loop
+        fc1 = self.fc1
+        act = self.act
+        drop = self.drop
+        fc2 = self.fc2
+        use_drop = self.use_drop
+
+        x = fc1(x)
+        x = act(x)
+        if use_drop:
+            x = drop(x)
+        x = fc2(x)
+        if use_drop:
+            x = drop(x)
         return x
