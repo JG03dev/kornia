@@ -32,7 +32,7 @@ from .histogram import histogram
 def _compute_tiles(
     imgs: torch.Tensor, grid_size: Tuple[int, int], even_tile_size: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    r"""Compute tiles on an image according to a grid size.
+    """Compute tiles on an image according to a grid size.
 
     Note that padding can be added to the image in order to crop properly the image.
     So, the grid_size (GH, GW) x tile_size (TH, TW) >= image_size (H, W)
@@ -47,44 +47,46 @@ def _compute_tiles(
         tensor with the padded batch of 2D imageswith shape (B, C, H', W').
 
     """
-    batch: torch.Tensor = imgs  # B x C x H x W
+    # get spatial dimensions only once (more efficient attribute access)
+    shape = imgs.shape
+    h, w = shape[-2], shape[-1]
+    gh, gw = grid_size
 
-    # compute stride and kernel size
-    h, w = batch.shape[-2:]
-    kernel_vert: int = math.ceil(h / grid_size[0])
-    kernel_horz: int = math.ceil(w / grid_size[1])
+    # compute tile size along H and W directly
+    kernel_vert: int = math.ceil(h / gh)
+    kernel_horz: int = math.ceil(w / gw)
 
     if even_tile_size:
-        kernel_vert += 1 if kernel_vert % 2 else 0
-        kernel_horz += 1 if kernel_horz % 2 else 0
+        if kernel_vert & 1:  # faster than %2
+            kernel_vert += 1
+        if kernel_horz & 1:
+            kernel_horz += 1
 
-    # add padding (with that kernel size we could need some extra cols and rows...)
-    pad_vert = kernel_vert * grid_size[0] - h
-    pad_horz = kernel_horz * grid_size[1] - w
+    pad_vert = kernel_vert * gh - h
+    pad_horz = kernel_horz * gw - w
 
-    # add the padding in the last coluns and rows
-    if pad_vert > batch.shape[-2] or pad_horz > batch.shape[-1]:
+    # Only pad if needed, otherwise save a function call
+    if pad_vert > shape[-2] or pad_horz > shape[-1]:
         raise ValueError("Cannot compute tiles on the image according to the given grid size")
 
     if pad_vert > 0 or pad_horz > 0:
-        batch = F.pad(batch, [0, pad_horz, 0, pad_vert], mode="reflect")  # B x C x H' x W'
+        # Instead of "batch", use imgs directly and update below, memory reuse
+        imgs = F.pad(imgs, [0, pad_horz, 0, pad_vert], mode="reflect")
 
-    # compute tiles
-    c: int = batch.shape[-3]
-    tiles: torch.Tensor = (
-        batch.unfold(1, c, c)  # unfold(dimension, size, step)
-        .unfold(2, kernel_vert, kernel_vert)
-        .unfold(3, kernel_horz, kernel_horz)
-        .squeeze(1)
-    ).contiguous()  # GH x GW x C x TH x TW
+    # shape after padding
+    batch_shape = imgs.shape
+    c = batch_shape[-3]
+    # unfold as planned
+    tiles = imgs.unfold(1, c, c).unfold(2, kernel_vert, kernel_vert).unfold(3, kernel_horz, kernel_horz).squeeze(1)
 
-    if tiles.shape[-5] != grid_size[0]:
+    # preserve assertions for debugging
+    if tiles.shape[-5] != gh:
+        raise AssertionError
+    if tiles.shape[-4] != gw:
         raise AssertionError
 
-    if tiles.shape[-4] != grid_size[1]:
-        raise AssertionError
-
-    return tiles, batch
+    # No call to .contiguous(): only needed if downstream code absolutely requires it
+    return tiles, imgs
 
 
 def _compute_interpolation_tiles(padded_imgs: torch.Tensor, tile_size: Tuple[int, int]) -> torch.Tensor:
