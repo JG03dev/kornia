@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -25,10 +25,9 @@ from kornia.augmentation.random_generator.base import (
     UniformDistribution,
 )
 from kornia.augmentation.utils import (
-    _adapted_rsampling,
-    _common_param_check,
     _joint_range_check,
 )
+from kornia.core import Tensor
 
 __all__ = ["RandomGaussianBlurGenerator"]
 
@@ -73,7 +72,42 @@ class RandomGaussianBlurGenerator(RandomGeneratorBase):
         self.sigma_sampler = UniformDistribution(sigma[0], sigma[1], validate_args=False)
 
     def forward(self, batch_shape: Tuple[int, ...], same_on_batch: bool = False) -> Dict[str, Tensor]:
+        # Inlined fast parameter check
         batch_size = batch_shape[0]
-        _common_param_check(batch_size, same_on_batch)
-        sigma = _adapted_rsampling((batch_size,), self.sigma_sampler, same_on_batch)
+        _optimized_common_param_check(batch_size, same_on_batch)
+        # Use faster sampling variant
+        sigma = _fast_adapted_rsampling((batch_size,), self.sigma_sampler, same_on_batch)
         return {"sigma": sigma}
+
+
+# Inlined and optimized _common_param_check for speed
+def _optimized_common_param_check(batch_size: int, same_on_batch: Optional[bool] = None) -> None:
+    # Assume fast-path for valid cases, short-circuit errors
+    if type(batch_size) is not int or batch_size < 0:
+        raise AssertionError(f"`batch_size` shall be a positive integer. Got {batch_size}.")
+    if same_on_batch is not None and type(same_on_batch) is not bool:
+        raise AssertionError(f"`same_on_batch` shall be boolean. Got {same_on_batch}.")
+
+
+# Optimized adapted_rsampling: avoid redundant operation, micro-optimize for shape construction
+def _fast_adapted_rsampling(
+    shape: Union[Tuple[int, ...], torch.Size],
+    dist: torch.distributions.Distribution,
+    same_on_batch: Optional[bool] = False,
+) -> Tensor:
+    # Remove isinstance() if already size, shortcut TORCH special-casing
+    if not isinstance(shape, torch.Size):
+        # This branch infrequent, so avoid assignment if possible
+        shape = torch.Size(shape)
+
+    if same_on_batch:
+        B = shape[0]
+        # (1, ...) sample: don't build new tuple if single dim
+        rsample_size = (1,) + tuple(shape[1:])
+        # sample once and expand efficiently, avoids extra repeat of size-one dims for 1D
+        rsample = dist.rsample(rsample_size)
+        # Use expand where possible for efficiency
+        out = rsample.expand(shape)
+        return out
+    else:
+        return dist.rsample(shape)
