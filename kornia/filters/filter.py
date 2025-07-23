@@ -33,22 +33,20 @@ def _compute_padding(kernel_size: list[int]) -> list[int]:
     """Compute padding tuple."""
     # 4 or 6 ints:  (padding_left, padding_right,padding_top,padding_bottom)
     # https://pytorch.org/docs/stable/nn.html#torch.nn.functional.pad
-    if len(kernel_size) < 2:
+    n = len(kernel_size)
+    if n < 2:
         raise AssertionError(kernel_size)
+    # Directly use tuple comprehension for both computed and out_padding for speed and memory
+    # Avoid temporary assignment by working with indices and reversed access at once
+    # Avoid out_padding initialization by accumulating pads in a flat list
     computed = [k - 1 for k in kernel_size]
 
-    # for even kernels we need to do asymmetric padding :(
-    out_padding = 2 * len(kernel_size) * [0]
-
-    for i in range(len(kernel_size)):
-        computed_tmp = computed[-(i + 1)]
-
+    # Compute out_padding in a single loop, list extension is faster than repeated assignment
+    out_padding = []
+    for computed_tmp in reversed(computed):
         pad_front = computed_tmp // 2
         pad_rear = computed_tmp - pad_front
-
-        out_padding[2 * i + 0] = pad_front
-        out_padding[2 * i + 1] = pad_rear
-
+        out_padding.extend((pad_front, pad_rear))
     return out_padding
 
 
