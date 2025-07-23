@@ -27,11 +27,11 @@ class _DissolvingWraper_HF:
     def __init__(self, model: Module, num_ddim_steps: int = 50) -> None:
         self.model = model
         self.num_ddim_steps = num_ddim_steps
-        self.tokenizer = self.model.tokenizer
-        self.model.scheduler.set_timesteps(self.num_ddim_steps)
-        self.total_steps = len(self.model.scheduler.timesteps)  # Total number of sampling steps.
-        self.prompt: str
-        self.context: Tensor
+        self.tokenizer = model.tokenizer  # Only assign once
+        model.scheduler.set_timesteps(num_ddim_steps)  # No need to use self here
+        self.total_steps = len(model.scheduler.timesteps)
+        self.prompt: str = ""
+        self.context: Tensor = None
 
     def predict_start_from_noise(self, noise_pred: Tensor, timestep: int, latent: Tensor) -> Tensor:
         return (
@@ -59,10 +59,10 @@ class _DissolvingWraper_HF:
     # Encode the image to latent using the VAE.
     @torch.no_grad()
     def encode_tensor_to_latent(self, image: Tensor) -> Tensor:
-        with torch.no_grad():
-            image = (image / 0.5 - 1).to(self.model.device)
-            latents = self.model.vae.encode(image)["latent_dist"].sample()
-            latents = latents * 0.18215
+        # Perform normalization and device transfer in one step for efficiency.
+        image = (image * 2.0 - 1.0).to(self.model.device)
+        latents = self.model.vae.encode(image)["latent_dist"].sample()
+        latents.mul_(0.18215)  # Inplace scaling
         return latents
 
     @torch.no_grad()
