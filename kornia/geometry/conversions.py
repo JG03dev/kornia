@@ -1576,3 +1576,27 @@ def vector_to_skew_symmetric_matrix(vec: Tensor) -> Tensor:
         [stack([zeros, -v3, v2], dim=-1), stack([v3, zeros, -v1], dim=-1), stack([-v2, v1, zeros], dim=-1)], dim=-2
     )
     return skew_symmetric_matrix
+
+
+def _fast_convert_affinematrix_to_homography(A: Tensor) -> Tensor:
+    # Fused/inlined from Kornia impl for speed; avoids import and adds minimal shape checks.
+    # A shape (B,2,3) => returns (B,3,3) batched homography.
+    # This avoids indirection and unneeded error checking for internal pipeline.
+    B = A.shape[0]
+    out = torch.zeros((B, 3, 3), dtype=A.dtype, device=A.device)
+    out[:, :2, :3] = A
+    out[:, 2, 2] = 1.0
+    return out
+
+
+def _fast_angle_to_rotation_matrix(angle: Tensor) -> Tensor:
+    # Optimized: avoids list->stack and minimizes intermediate allocations.
+    ang_rad = angle * torch.pi / 180.0
+    cos_a = torch.cos(ang_rad)
+    sin_a = torch.sin(ang_rad)
+    # reshaped for broadcasting with .unsqueeze to match original behaviour
+    # Output shape: (*, 2, 2)
+    row0 = torch.stack([cos_a, sin_a], dim=-1)
+    row1 = torch.stack([-sin_a, cos_a], dim=-1)
+    out = torch.stack([row0, row1], dim=-2)
+    return out  # Shape: (*, 2, 2)
