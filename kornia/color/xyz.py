@@ -26,7 +26,7 @@ from kornia.core import Tensor
 
 
 def rgb_to_xyz(image: Tensor) -> Tensor:
-    r"""Convert a RGB image to XYZ.
+    """Convert a RGB image to XYZ.
 
     .. image:: _static/img/rgb_to_xyz.png
 
@@ -47,15 +47,22 @@ def rgb_to_xyz(image: Tensor) -> Tensor:
     if len(image.shape) < 3 or image.shape[-3] != 3:
         raise ValueError(f"Input size must have a shape of (*, 3, H, W). Got {image.shape}")
 
-    r: Tensor = image[..., 0, :, :]
-    g: Tensor = image[..., 1, :, :]
-    b: Tensor = image[..., 2, :, :]
+    # Use a single matrix multiplication for the conversion instead of indexing and combining
+    # This helps both for CPU and GPU for batched and contiguous input
+    rgb_to_xyz_mat = torch.tensor(
+        [[0.412453, 0.357580, 0.180423], [0.212671, 0.715160, 0.072169], [0.019334, 0.119193, 0.950227]],
+        dtype=image.dtype,
+        device=image.device,
+    )  # shape: (3, 3)
 
-    x: Tensor = 0.412453 * r + 0.357580 * g + 0.180423 * b
-    y: Tensor = 0.212671 * r + 0.715160 * g + 0.072169 * b
-    z: Tensor = 0.019334 * r + 0.119193 * g + 0.950227 * b
+    # image: (*, 3, H, W)
+    # move channel to last dimension for matmul: (*, H, W, 3)
+    image_perm = image.movedim(-3, -1)
+    # out: (*, H, W, 3) -> matmul last dimension (3,) with (3, 3)->(3,)
+    out_xyz = torch.matmul(image_perm, rgb_to_xyz_mat.T)
 
-    out: Tensor = torch.stack([x, y, z], -3)
+    # Move channel back to channel-first: (*, 3, H, W)
+    out = out_xyz.movedim(-1, -3)
 
     return out
 
