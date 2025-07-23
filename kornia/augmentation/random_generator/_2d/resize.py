@@ -15,14 +15,15 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
 from typing import Dict, Tuple, Union
 
 import torch
 
 from kornia.augmentation.random_generator.base import RandomGeneratorBase
 from kornia.augmentation.utils import _common_param_check
-from kornia.core import Device, Tensor, tensor
-from kornia.geometry.bbox import bbox_generator
+from kornia.core import Device, Tensor
 from kornia.geometry.transform.affwarp import _side_to_image_size
 
 __all__ = ["ResizeGenerator"]
@@ -75,14 +76,7 @@ class ResizeGenerator(RandomGeneratorBase):
                 "dst": torch.zeros([0, 4, 2], device=_device, dtype=_dtype),
             }
 
-        input_size = h, w = (batch_shape[-2], batch_shape[-1])
-
-        src = bbox_generator(
-            tensor(0, device=_device, dtype=_dtype),
-            tensor(0, device=_device, dtype=_dtype),
-            tensor(input_size[1], device=_device, dtype=_dtype),
-            tensor(input_size[0], device=_device, dtype=_dtype),
-        ).repeat(batch_size, 1, 1)
+        input_size = h, w = batch_shape[-2], batch_shape[-1]
 
         if isinstance(self.output_size, int):
             aspect_ratio = w / h
@@ -92,21 +86,40 @@ class ResizeGenerator(RandomGeneratorBase):
 
         if not (
             len(output_size) == 2
-            and isinstance(output_size[0], (int,))
-            and isinstance(output_size[1], (int,))
+            and isinstance(output_size[0], int)
+            and isinstance(output_size[1], int)
             and output_size[0] > 0
             and output_size[1] > 0
         ):
             raise AssertionError(f"`resize_to` must be a tuple of 2 positive integers. Got {output_size}.")
 
-        dst = bbox_generator(
-            tensor(0, device=_device, dtype=_dtype),
-            tensor(0, device=_device, dtype=_dtype),
-            tensor(output_size[1], device=_device, dtype=_dtype),
-            tensor(output_size[0], device=_device, dtype=_dtype),
-        ).repeat(batch_size, 1, 1)
+        # Use fast vectorized bbox construction instead of repeatedly calling .repeat/.view for each batch
+        src = _fast_bbox_batch(0, 0, w, h, batch_size, device=_device, dtype=_dtype)
+        dst = _fast_bbox_batch(0, 0, output_size[1], output_size[0], batch_size, device=_device, dtype=_dtype)
 
-        _input_size = tensor(input_size, device=_device, dtype=torch.long).expand(batch_size, -1)
-        _output_size = tensor(output_size, device=_device, dtype=torch.long).expand(batch_size, -1)
+        # These are always the same for all items in the batch, so expand them efficiently
+        _input_size = torch.full((batch_size, 2), fill_value=0, device=_device, dtype=torch.long)
+        _input_size[:, 0] = h
+        _input_size[:, 1] = w
+
+        _output_size = torch.full((batch_size, 2), fill_value=0, device=_device, dtype=torch.long)
+        _output_size[:, 0] = output_size[0]
+        _output_size[:, 1] = output_size[1]
 
         return {"src": src, "dst": dst, "input_size": _input_size, "output_size": _output_size}
+
+
+def _fast_bbox_batch(
+    x_start: int, y_start: int, width: int, height: int, batch_size: int, device, dtype
+) -> torch.Tensor:
+    # Generate a batch of bounding boxes for rectangular input.
+    # The result will be shape [batch_size, 4, 2], covering points:
+    # [ [x_start, y_start], [x_start + width - 1, y_start], [x_start + width - 1, y_start + height - 1], [x_start, y_start + height - 1] ]
+    # Use broadcasting and int arithmetic, and replicating using expand, no per-batch allocation or slow view/repeats.
+
+    if batch_size == 0:
+        return torch.zeros([0, 4, 2], device=device, dtype=dtype)
+    xs = torch.tensor([x_start, x_start + width - 1, x_start + width - 1, x_start], device=device, dtype=dtype)
+    ys = torch.tensor([y_start, y_start, y_start + height - 1, y_start + height - 1], device=device, dtype=dtype)
+    bbox = torch.stack([xs, ys], dim=-1)  # [4,2]
+    return bbox.unsqueeze(0).expand(batch_size, 4, 2).clone()  # Ensure memory separation if required

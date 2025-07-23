@@ -585,3 +585,19 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torc
         return stack(keep)
 
     return torch.tensor(keep)
+
+
+def _fast_bbox_batch(
+    x_start: int, y_start: int, width: int, height: int, batch_size: int, device, dtype
+) -> torch.Tensor:
+    # Generate a batch of bounding boxes for rectangular input.
+    # The result will be shape [batch_size, 4, 2], covering points:
+    # [ [x_start, y_start], [x_start + width - 1, y_start], [x_start + width - 1, y_start + height - 1], [x_start, y_start + height - 1] ]
+    # Use broadcasting and int arithmetic, and replicating using expand, no per-batch allocation or slow view/repeats.
+
+    if batch_size == 0:
+        return torch.zeros([0, 4, 2], device=device, dtype=dtype)
+    xs = torch.tensor([x_start, x_start + width - 1, x_start + width - 1, x_start], device=device, dtype=dtype)
+    ys = torch.tensor([y_start, y_start, y_start + height - 1, y_start + height - 1], device=device, dtype=dtype)
+    bbox = torch.stack([xs, ys], dim=-1)  # [4,2]
+    return bbox.unsqueeze(0).expand(batch_size, 4, 2).clone()  # Ensure memory separation if required
