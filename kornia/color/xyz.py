@@ -61,7 +61,7 @@ def rgb_to_xyz(image: Tensor) -> Tensor:
 
 
 def xyz_to_rgb(image: Tensor) -> Tensor:
-    r"""Convert a XYZ image to RGB.
+    """Convert a XYZ image to RGB.
 
     Args:
         image: XYZ Image to be converted to RGB with shape :math:`(*, 3, H, W)`.
@@ -80,17 +80,13 @@ def xyz_to_rgb(image: Tensor) -> Tensor:
     if len(image.shape) < 3 or image.shape[-3] != 3:
         raise ValueError(f"Input size must have a shape of (*, 3, H, W). Got {image.shape}")
 
-    x: Tensor = image[..., 0, :, :]
-    y: Tensor = image[..., 1, :, :]
-    z: Tensor = image[..., 2, :, :]
-
-    r: Tensor = 3.2404813432005266 * x + -1.5371515162713185 * y + -0.4985363261688878 * z
-    g: Tensor = -0.9692549499965682 * x + 1.8759900014898907 * y + 0.0415559265582928 * z
-    b: Tensor = 0.0556466391351772 * x + -0.2040413383665112 * y + 1.0573110696453443 * z
-
-    out: Tensor = torch.stack([r, g, b], dim=-3)
-
-    return out
+    # Use tensor device and dtype for transformation matrix.
+    matrix = _XYZ_TO_RGB.to(dtype=image.dtype, device=image.device)
+    # .movedim(-3, -1): (..., H, W, 3)
+    # (..., H, W, 3) @ (3,3).T -> (..., H, W, 3)
+    rgb = torch.matmul(image.movedim(-3, -1), matrix.T)
+    # move channels back: (..., 3, H, W)
+    return rgb.movedim(-1, -3)
 
 
 class RgbToXyz(Module):
@@ -147,3 +143,13 @@ class XyzToRgb(Module):
 
     def forward(self, image: Tensor) -> Tensor:
         return xyz_to_rgb(image)
+
+
+_XYZ_TO_RGB = torch.tensor(
+    [
+        [3.2404813432005266, -1.5371515162713185, -0.4985363261688878],
+        [-0.9692549499965682, 1.8759900014898907, 0.0415559265582928],
+        [0.0556466391351772, -0.2040413383665112, 1.0573110696453443],
+    ],
+    dtype=torch.float32,
+)
