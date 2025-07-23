@@ -23,7 +23,7 @@ import torch
 
 from kornia.color.rgb import bgr_to_rgb
 from kornia.core import ImageModule as Module
-from kornia.core import Tensor, concatenate
+from kornia.core import Module, Tensor, concatenate
 from kornia.core.check import KORNIA_CHECK_IS_TENSOR
 
 
@@ -54,7 +54,7 @@ def grayscale_to_rgb(image: Tensor) -> Tensor:
 
 
 def rgb_to_grayscale(image: Tensor, rgb_weights: Optional[Tensor] = None) -> Tensor:
-    r"""Convert a RGB image to grayscale version of image.
+    """Convert a RGB image to grayscale version of image.
 
     .. image:: _static/img/rgb_to_grayscale.png
 
@@ -82,25 +82,23 @@ def rgb_to_grayscale(image: Tensor, rgb_weights: Optional[Tensor] = None) -> Ten
         raise ValueError(f"Input size must have a shape of (*, 3, H, W). Got {image.shape}")
 
     if rgb_weights is None:
-        # 8 bit images
         if image.dtype == torch.uint8:
-            rgb_weights = torch.tensor([76, 150, 29], device=image.device, dtype=torch.uint8)
-        # floating point images
+            # Precompute sum for uint8 scaling with integers for maximum speed
+            rgb_weights = torch.tensor([76, 150, 29], device=image.device, dtype=image.dtype)  # 76+150+29=255
         elif image.dtype in (torch.float16, torch.float32, torch.float64):
             rgb_weights = torch.tensor([0.299, 0.587, 0.114], device=image.device, dtype=image.dtype)
         else:
             raise TypeError(f"Unknown data type: {image.dtype}")
     else:
-        # is tensor that we make sure is in the same device/dtype
         rgb_weights = rgb_weights.to(image)
 
-    # unpack the color image channels with RGB order
-    r: Tensor = image[..., 0:1, :, :]
-    g: Tensor = image[..., 1:2, :, :]
-    b: Tensor = image[..., 2:3, :, :]
-
-    w_r, w_g, w_b = rgb_weights.unbind()
-    return w_r * r + w_g * g + w_b * b
+    # Use torch.tensordot for optimal channel reduction (batch + any dims supported)
+    shape_pre = image.shape[:-3]
+    h, w = image.shape[-2:]
+    img_flat = image.view(-1, 3, h, w)
+    out = torch.tensordot(img_flat, rgb_weights, dims=([1], [0])).unsqueeze(1)
+    out = out.view(*shape_pre, 1, h, w)
+    return out
 
 
 def bgr_to_grayscale(image: Tensor) -> Tensor:

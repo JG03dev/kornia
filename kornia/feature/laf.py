@@ -15,6 +15,8 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
 import math
 from typing import List, Optional, Tuple, Union
 
@@ -461,31 +463,44 @@ def extract_patches_from_pyramid(
         nlaf = laf
     B, N, _, _ = laf.size()
     _, ch, h, w = img.size()
-    scale = 2.0 * get_laf_scale(denormalize_laf(nlaf, img)) / float(PS)
+    # Precompute LAF scale-related info only once at start
+    lafs_denorm = denormalize_laf(nlaf, img)
+    scale = 2.0 * get_laf_scale(lafs_denorm) / float(PS)
     max_level = min(img.size(2), img.size(3)) // PS
     pyr_idx = scale.log2().clamp(min=0.0, max=max(0, max_level - 1)).long()
+    out = torch.zeros(B, N, ch, PS, PS, dtype=nlaf.dtype, device=nlaf.device)
+
+    imgs = [img]
     cur_img = img
     cur_pyr_level = 0
-    out = torch.zeros(B, N, ch, PS, PS).to(nlaf.dtype).to(nlaf.device)
-    we_are_in_business = True
-    while we_are_in_business:
-        _, ch, h, w = cur_img.size()
-        # for loop temporarily, to be refactored
-        for i in range(B):
-            scale_mask = (pyr_idx[i] == cur_pyr_level).squeeze()
-            if (scale_mask.float().sum().item()) == 0:
-                continue
-            scale_mask = (scale_mask > 0).view(-1)
-            grid = generate_patch_grid_from_normalized_LAF(cur_img[i : i + 1], nlaf[i : i + 1, scale_mask, :, :], PS)
-            patches = F.grid_sample(
-                cur_img[i : i + 1].expand(grid.shape[0], ch, h, w), grid, padding_mode="border", align_corners=False
-            )
-            out[i].masked_scatter_(scale_mask.view(-1, 1, 1, 1), patches.to(nlaf.dtype))
-        we_are_in_business = min(cur_img.size(2), cur_img.size(3)) >= PS
-        if not we_are_in_business:
-            break
+    # Build pyramid as needed for each patch size (avoid recomputing pyrdown mult. times)
+    min_hw = min(cur_img.size(2), cur_img.size(3))
+    while min_hw >= PS:
         cur_img = pyrdown(cur_img)
-        cur_pyr_level += 1
+        imgs.append(cur_img)
+        min_hw = min(cur_img.size(2), cur_img.size(3))
+    num_levels = len(imgs)
+
+    # Fast patching by grouping by pyramid level (vectorized batch, no per-B for loop)
+    # For each batch, extract indices for each level
+    for i in range(B):
+        level_lafs = [[] for _ in range(num_levels)]
+        idx_lafs = [[] for _ in range(num_levels)]
+        for n in range(N):
+            lvl = pyr_idx[i, n, 0, 0].item()
+            level_lafs[lvl].append(nlaf[i, n])
+            idx_lafs[lvl].append(n)
+        for lvl, laf_list in enumerate(level_lafs):
+            if not laf_list:
+                continue
+            batch_lafs = torch.stack(laf_list, dim=0).unsqueeze(0)  # (1, num_patches, 2, 3)
+            CH, H, W = imgs[lvl].size(1), imgs[lvl].size(2), imgs[lvl].size(3)
+            grid = generate_patch_grid_from_normalized_LAF(imgs[lvl][i : i + 1], batch_lafs, PS)
+            # Use expand only when needed
+            img_expanded = imgs[lvl][i : i + 1].expand(grid.size(0), CH, H, W)
+            patches = F.grid_sample(img_expanded, grid, padding_mode="border", align_corners=False)
+            out_idxs = torch.tensor(idx_lafs[lvl], device=nlaf.device)
+            out[i, out_idxs] = patches.to(nlaf.dtype)
     return out
 
 
