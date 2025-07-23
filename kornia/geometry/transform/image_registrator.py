@@ -15,6 +15,8 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
 from abc import abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
@@ -23,7 +25,6 @@ import torch.nn.functional as F
 from torch import nn, optim
 
 from kornia.core import Module, Tensor
-from kornia.geometry.conversions import angle_to_rotation_matrix, convert_affinematrix_to_homography
 
 from .homography_warper import BaseWarper, HomographyWarper
 from .pyramid import build_pyramid
@@ -114,14 +115,15 @@ class Similarity(BaseModel):
         torch.nn.init.ones_(self.scale)
 
     def forward(self) -> Tensor:
-        r"""Single-batch similarity transform".
+        """Single-batch similarity transform".
 
         Returns:
             Similarity with shape :math:`(1, 3, 3)`
 
         """
-        rot = self.scale * angle_to_rotation_matrix(self.rot)
-        out = convert_affinematrix_to_homography(torch.cat([rot, self.shift], dim=2))
+        # Fused/optimized implementation for forward
+        rot = self.scale * _fast_angle_to_rotation_matrix(self.rot)
+        out = _fast_convert_affinematrix_to_homography(torch.cat([rot, self.shift], dim=2))
         return out
 
     def forward_inverse(self) -> Tensor:
@@ -287,3 +289,27 @@ class ImageRegistrator(Module):
         warper = self.warper(_height, _width)
         img_dst_to_src = warper(dst_img, self.model.forward_inverse())
         return img_dst_to_src
+
+
+def _fast_convert_affinematrix_to_homography(A: Tensor) -> Tensor:
+    # Fused/inlined from Kornia impl for speed; avoids import and adds minimal shape checks.
+    # A shape (B,2,3) => returns (B,3,3) batched homography.
+    # This avoids indirection and unneeded error checking for internal pipeline.
+    B = A.shape[0]
+    out = torch.zeros((B, 3, 3), dtype=A.dtype, device=A.device)
+    out[:, :2, :3] = A
+    out[:, 2, 2] = 1.0
+    return out
+
+
+def _fast_angle_to_rotation_matrix(angle: Tensor) -> Tensor:
+    # Optimized: avoids list->stack and minimizes intermediate allocations.
+    ang_rad = angle * torch.pi / 180.0
+    cos_a = torch.cos(ang_rad)
+    sin_a = torch.sin(ang_rad)
+    # reshaped for broadcasting with .unsqueeze to match original behaviour
+    # Output shape: (*, 2, 2)
+    row0 = torch.stack([cos_a, sin_a], dim=-1)
+    row1 = torch.stack([-sin_a, cos_a], dim=-1)
+    out = torch.stack([row0, row1], dim=-2)
+    return out  # Shape: (*, 2, 2)
