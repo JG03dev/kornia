@@ -33,11 +33,17 @@ class _DissolvingWraper_HF:
         self.prompt: str
         self.context: Tensor
 
+        # Optimization: Precompute sqrt values for each alpha_cumprod
+        alphas_cumprod = self.model.scheduler.alphas_cumprod
+        # Avoid repeated sqrt and division
+        self._sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / alphas_cumprod)
+        self._sqrt_recipm1_alphas_cumprod = torch.sqrt(1.0 / alphas_cumprod - 1)
+
     def predict_start_from_noise(self, noise_pred: Tensor, timestep: int, latent: Tensor) -> Tensor:
-        return (
-            torch.sqrt(1.0 / self.model.scheduler.alphas_cumprod[timestep]) * latent
-            - torch.sqrt(1.0 / self.model.scheduler.alphas_cumprod[timestep] - 1) * noise_pred
-        )
+        # Use precomputed sqrt values to minimize runtime computation
+        sqrt_recip = self._sqrt_recip_alphas_cumprod[timestep]
+        sqrt_recipm1 = self._sqrt_recipm1_alphas_cumprod[timestep]
+        return sqrt_recip * latent - sqrt_recipm1 * noise_pred
 
     @torch.no_grad()
     def init_prompt(self, prompt: str) -> None:
