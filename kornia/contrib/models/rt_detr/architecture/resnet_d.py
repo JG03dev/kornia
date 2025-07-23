@@ -60,7 +60,17 @@ class BasicBlockD(Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.relu(self.convs(x) + self.short(x))
+        # Avoid repeated attribute lookups
+        convs = self.convs
+        short = self.short
+        relu = self.relu
+
+        # Compute shortcut and conv path
+        y1 = convs(x)
+        y2 = short(x)
+        # Add the two, reusing y1 to save memory
+        y1 += y2
+        return relu(y1)
 
 
 class BottleneckD(Module):
