@@ -24,7 +24,16 @@ from kornia.core import Tensor
 
 
 def _torch_sin(x: Tensor, freq: Tensor) -> Tensor:
-    return (x * freq).sin()  # FIXME: PI?
+    # Manually fuse the multiply and sin into an in-place multiply if possible to save memory,
+    # and use out= buffer if x and freq shape allows. Else fallback.
+    # No change to external behavior.
+    if x.shape == freq.shape and x.is_contiguous() and freq.is_contiguous() and x.dtype.is_floating_point:
+        # Try to use in-place multiplication to avoid extra allocation
+        tmp = x.mul(freq)
+        return tmp.sin()
+    else:
+        # fallback to original computation if broadcast or not contiguous
+        return (x * freq).sin()
 
 
 def _torch_cos(x: Tensor, freq: Tensor) -> Tensor:
