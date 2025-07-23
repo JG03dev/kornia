@@ -183,9 +183,10 @@ class HausdorffERLoss(_HausdorffERLossBase):
 
     def get_kernel(self) -> Tensor:
         """Get kernel for image morphology convolution."""
-        cross = tensor([[[0, 1, 0], [1, 1, 1], [0, 1, 0]]])
-        kernel = cross * 0.2
-        return kernel[None]
+        # Instead of allocating first then scaling, directly create the required float tensor
+        # and expand to match the expected input for convolution
+        kernel = tensor([[[[0.0, 0.2, 0.0], [0.2, 0.2, 0.2], [0.0, 0.2, 0.0]]]])
+        return kernel
 
     def forward(self, pred: Tensor, target: Tensor) -> Tensor:
         """Compute Hausdorff loss.
