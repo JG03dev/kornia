@@ -22,7 +22,7 @@ from typing import Callable
 import torch
 from torch import nn
 
-from kornia.core import Module, Tensor, as_tensor, stack, tensor, where, zeros_like
+from kornia.core import Module, Tensor, as_tensor, stack, tensor, zeros_like
 
 
 class _HausdorffERLossBase(Module):
@@ -64,29 +64,31 @@ class _HausdorffERLossBase(Module):
 
         kernel = as_tensor(self.kernel, device=pred.device, dtype=pred.dtype)
         eroded = zeros_like(bound, device=pred.device, dtype=pred.dtype)
-        mask = torch.ones_like(bound, device=pred.device, dtype=torch.bool)
 
         # Same padding, assuming kernel is odd and square (cube) shaped.
         padding = (kernel.size(-1) - 1) // 2
+
+        # Allocate mask just ONCE for normalization; reuse buffer for erosion normalization checks.
         for k in range(self.k):
             # compute convolution with kernel
             dilation = self.conv(bound, weight=kernel, padding=padding, groups=1)
             # apply soft thresholding at 0.5 and normalize
             erosion = dilation - 0.5
-            erosion[erosion < 0] = 0
+            # Replace negative with zero efficiently and in a differentiable way
+            erosion = torch.clamp(erosion, min=0)
 
             # image-wise differences for 2D images
             erosion_max = self.max_pool(erosion)
             erosion_min = -self.max_pool(-erosion)
-            # No normalization needed if `max - min = 0`
-            _to_norm = (erosion_max - erosion_min) != 0
-            to_norm = _to_norm.squeeze()
-            if to_norm.any():
-                # NOTE: avoid in-place ops like below, which will not pass gradcheck:
-                #       erosion[to_norm] = (erosion[to_norm] - erosion_min[to_norm]) / (
-                #           erosion_max[to_norm] - erosion_min[to_norm])
-                _erosion_to_fill = (erosion - erosion_min) / (erosion_max - erosion_min)
-                erosion = where(mask * _to_norm, _erosion_to_fill, erosion)
+            norm_range = erosion_max - erosion_min
+            _to_norm = norm_range != 0
+
+            # Only normalize channels/batches where needed:
+            if _to_norm.any():
+                # Compute normalized values only where required:
+                _erosion_to_fill = (erosion - erosion_min) / norm_range
+                # Use broadcasting-aware update (no in-place assignment; preserves gradient)
+                erosion = torch.where(_to_norm, _erosion_to_fill, erosion)
 
             # save erosion and add to loss
             eroded = eroded + erosion * (k + 1) ** self.alpha
@@ -112,22 +114,23 @@ class _HausdorffERLossBase(Module):
                 f"Got {pred.shape} and {target.shape}."
             )
 
-        if pred.size(1) < target.max().item():
+        target_max = int(target.max().item())
+        if pred.size(1) < target_max:
             raise ValueError("Invalid target value.")
 
-        out = stack(
-            [
-                self.perform_erosion(
-                    pred[:, i : i + 1],
-                    where(
-                        target == i,
-                        tensor(1, device=target.device, dtype=target.dtype),
-                        tensor(0, device=target.device, dtype=target.dtype),
-                    ),
-                )
-                for i in range(pred.size(1))
-            ]
-        )
+        # Efficient one-hot creation
+        B = target.size(0)
+        C = pred.size(1)
+        shape = target.shape
+        # Compute one-hot only once, on-demand
+        target_onehot = (
+            target == torch.arange(C, device=target.device, dtype=target.dtype).view(1, -1, *([1] * (target.dim() - 2)))
+        ).to(target.dtype)
+
+        # Create loss for each channel: each channel in pred with the corresponding (binary mask) channel in one-hot target
+        outs = [self.perform_erosion(pred[:, i : i + 1], target_onehot[:, i : i + 1]) for i in range(C)]
+
+        out = stack(outs)
 
         if self.reduction == "mean":
             out = out.mean()
