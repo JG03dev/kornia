@@ -135,7 +135,16 @@ def _compute_interpolation_tiles(padded_imgs: torch.Tensor, tile_size: Tuple[int
 
 
 def _my_histc(tiles: torch.Tensor, bins: int) -> torch.Tensor:
-    return _torch_histc_cast(tiles, bins=bins, min=0, max=1)
+    # Fast path: avoid function indirection and unnecessary dtype casting if tiles is already float32 or float64.
+    # torch.histc only works with float32/float64, so cast once if needed.
+    if not isinstance(tiles, torch.Tensor):
+        raise AssertionError(f"Input must be Tensor. Got: {type(tiles)}.")
+    original_dtype = tiles.dtype
+    # Only cast if needed
+    if original_dtype not in (torch.float32, torch.float64):
+        hist = torch.histc(tiles.to(torch.float32), bins, 0, 1)
+        return hist.to(original_dtype)
+    return torch.histc(tiles, bins, 0, 1)
 
 
 def _compute_luts(
