@@ -27,11 +27,12 @@ class _DissolvingWraper_HF:
     def __init__(self, model: Module, num_ddim_steps: int = 50) -> None:
         self.model = model
         self.num_ddim_steps = num_ddim_steps
-        self.tokenizer = self.model.tokenizer
-        self.model.scheduler.set_timesteps(self.num_ddim_steps)
-        self.total_steps = len(self.model.scheduler.timesteps)  # Total number of sampling steps.
-        self.prompt: str
-        self.context: Tensor
+        self.tokenizer = model.tokenizer
+        scheduler = model.scheduler
+        scheduler.set_timesteps(num_ddim_steps)
+        self.total_steps = len(scheduler.timesteps)
+        self.prompt = ""
+        self.context = None
 
     def predict_start_from_noise(self, noise_pred: Tensor, timestep: int, latent: Tensor) -> Tensor:
         return (
@@ -67,9 +68,14 @@ class _DissolvingWraper_HF:
 
     @torch.no_grad()
     def decode_tensor_to_latent(self, latents: Tensor) -> Tensor:
-        latents = 1 / 0.18215 * latents.detach()
+        # Shortcut constant for efficiency and type-safety:
+        scale = float(1.0 / 0.18215)
+        # Only detach if necessary (assume input is not always detached already):
+        if latents.requires_grad:
+            latents = latents.detach()
+        latents = latents * scale
         image = self.model.vae.decode(latents)["sample"]
-        image = (image / 2 + 0.5).clamp(0, 1)
+        image = image.div_(2).add_(0.5).clamp_(0, 1)
         return image
 
     @torch.no_grad()
