@@ -47,8 +47,7 @@ class Homography(BaseModel):
 
     def __init__(self) -> None:
         super().__init__()
-        self.model = nn.Parameter(torch.eye(3))
-        self.reset_model()
+        self.model = nn.Parameter(torch.eye(3, dtype=torch.float32))
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.model})"
@@ -58,13 +57,16 @@ class Homography(BaseModel):
         torch.nn.init.eye_(self.model)
 
     def forward(self) -> Tensor:
-        r"""Single-batch homography".
+        """Single-batch homography".
 
         Returns:
             Homography matrix with shape :math:`(1, 3, 3)`.
 
         """
-        return torch.unsqueeze(self.model / self.model[2, 2], dim=0)  # 1x3x3
+        denom = self.model[2, 2]
+        # Normalizing and keeping memory layout unchanged, then expanding dims
+        out = self.model / denom
+        return out.unsqueeze(0)
 
     def forward_inverse(self) -> Tensor:
         r"""Interted Single-batch homography".
