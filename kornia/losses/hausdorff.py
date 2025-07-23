@@ -22,7 +22,7 @@ from typing import Callable
 import torch
 from torch import nn
 
-from kornia.core import Module, Tensor, as_tensor, stack, tensor, where, zeros_like
+from kornia.core import Module, Tensor, stack, tensor, where, zeros_like
 
 
 class _HausdorffERLossBase(Module):
@@ -61,35 +61,37 @@ class _HausdorffERLossBase(Module):
 
     def perform_erosion(self, pred: Tensor, target: Tensor) -> Tensor:
         bound = (pred - target) ** 2
-
-        kernel = as_tensor(self.kernel, device=pred.device, dtype=pred.dtype)
-        eroded = zeros_like(bound, device=pred.device, dtype=pred.dtype)
-        mask = torch.ones_like(bound, device=pred.device, dtype=torch.bool)
+        # Avoid repeated kernel conversion in loop, and ensure correct type/device
+        kernel = self.kernel
+        if kernel.device != pred.device or kernel.dtype != pred.dtype:
+            kernel = kernel.to(device=pred.device, dtype=pred.dtype)
+        eroded = zeros_like(bound)
+        mask = torch.ones_like(bound, dtype=torch.bool)  # mask is always 'true', can be dropped?
 
         # Same padding, assuming kernel is odd and square (cube) shaped.
         padding = (kernel.size(-1) - 1) // 2
-        for k in range(self.k):
-            # compute convolution with kernel
-            dilation = self.conv(bound, weight=kernel, padding=padding, groups=1)
-            # apply soft thresholding at 0.5 and normalize
-            erosion = dilation - 0.5
-            erosion[erosion < 0] = 0
 
-            # image-wise differences for 2D images
+        for step in range(self.k):
+            dilation = self.conv(bound, weight=kernel, padding=padding, groups=1)
+            # Vectorized ReLU to get soft-thresholded erosion
+            erosion = torch.clamp_min(dilation - 0.5, 0.0)
+
+            # Avoid repeated ops: max_pool is batch-wise, so share computation
             erosion_max = self.max_pool(erosion)
             erosion_min = -self.max_pool(-erosion)
-            # No normalization needed if `max - min = 0`
-            _to_norm = (erosion_max - erosion_min) != 0
-            to_norm = _to_norm.squeeze()
-            if to_norm.any():
-                # NOTE: avoid in-place ops like below, which will not pass gradcheck:
-                #       erosion[to_norm] = (erosion[to_norm] - erosion_min[to_norm]) / (
-                #           erosion_max[to_norm] - erosion_min[to_norm])
-                _erosion_to_fill = (erosion - erosion_min) / (erosion_max - erosion_min)
-                erosion = where(mask * _to_norm, _erosion_to_fill, erosion)
+            diff = erosion_max - erosion_min
 
-            # save erosion and add to loss
-            eroded = eroded + erosion * (k + 1) ** self.alpha
+            # torch.where for normalization, fully vectorized
+            norm = (erosion - erosion_min) / diff.clamp_min(1e-12)
+            # Determine which values actually need normalization (skip where diff==0)
+            need_norm = diff != 0
+            # To match broadcast, expand need_norm as needed for batch dimensions
+            while need_norm.dim() < erosion.dim():
+                need_norm = need_norm.unsqueeze(-1)
+            erosion = torch.where(need_norm, norm, erosion)
+
+            # Add weighted value; (step+1)**alpha is a scalar
+            eroded = eroded + erosion * (step + 1) ** self.alpha
             bound = erosion
 
         return eroded
