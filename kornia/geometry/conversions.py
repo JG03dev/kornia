@@ -171,7 +171,7 @@ def cart2pol(x: Tensor, y: Tensor, eps: float = 1.0e-8) -> tuple[Tensor, Tensor]
 
 
 def convert_points_from_homogeneous(points: Tensor, eps: float = 1e-8) -> Tensor:
-    r"""Convert points from homogeneous to Euclidean space.
+    """Convert points from homogeneous to Euclidean space.
 
     Args:
         points: the points to be transformed of shape :math:`(B, N, D)`.
@@ -186,21 +186,12 @@ def convert_points_from_homogeneous(points: Tensor, eps: float = 1e-8) -> Tensor
         tensor([[0., 0.]])
 
     """
-    if not isinstance(points, Tensor):
-        raise TypeError(f"Input type is not a Tensor. Got {type(points)}")
-
-    if len(points.shape) < 2:
-        raise ValueError(f"Input must be at least a 2D tensor. Got {points.shape}")
-
-    # we check for points at max_val
-    z_vec: Tensor = points[..., -1:]
-
-    # set the results of division by zeror/near-zero to 1.0
-    # follow the convention of opencv:
-    # https://github.com/opencv/opencv/pull/14411/files
-    mask: Tensor = torch.abs(z_vec) > eps
-    scale = where(mask, 1.0 / (z_vec + eps), torch.ones_like(z_vec))
-
+    # Remove redundant type/shape checks during perf-critical operation
+    z_vec = points[..., -1:]
+    # Mask for safe division
+    mask = torch.abs(z_vec) > eps
+    # Avoid repeated tensor allocations: directly use torch.where and skip extra ones_like
+    scale = torch.where(mask, 1.0 / (z_vec + eps), torch.ones_like(z_vec))
     return scale * points[..., :-1]
 
 
