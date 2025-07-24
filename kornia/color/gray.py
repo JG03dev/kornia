@@ -23,12 +23,12 @@ import torch
 
 from kornia.color.rgb import bgr_to_rgb
 from kornia.core import ImageModule as Module
-from kornia.core import Tensor, concatenate
+from kornia.core import Tensor
 from kornia.core.check import KORNIA_CHECK_IS_TENSOR
 
 
 def grayscale_to_rgb(image: Tensor) -> Tensor:
-    r"""Convert a grayscale image to RGB version of image.
+    """Convert a grayscale image to RGB version of image.
 
     .. image:: _static/img/grayscale_to_rgb.png
 
@@ -45,12 +45,18 @@ def grayscale_to_rgb(image: Tensor) -> Tensor:
         >>> gray = grayscale_to_rgb(input) # 2x3x4x5
 
     """
-    KORNIA_CHECK_IS_TENSOR(image)
-
-    if len(image.shape) < 3 or image.shape[-3] != 1:
-        raise ValueError(f"Input size must have a shape of (*, 1, H, W). Got {image.shape}.")
-
-    return concatenate([image, image, image], -3)
+    # ----- Fast path sanity checks -----
+    # Inline partial typechecks for common case to save KORNIA_CHECK_IS_TENSOR cost.
+    # Only fallback to the slow check if check fails.
+    # This inlines the isinstance() call from KORNIA_CHECK_IS_TENSOR, which profiler says is dominant.
+    if not isinstance(image, Tensor):
+        # fallback to erroring in original function
+        KORNIA_CHECK_IS_TENSOR(image)  # will raise
+    shape = image.shape
+    if len(shape) < 3 or shape[-3] != 1:
+        raise ValueError(f"Input size must have a shape of (*, 1, H, W). Got {shape}.")
+    # Use the fast helper with .expand (no memory copy)
+    return _grayscale_to_rgb_fast(image)
 
 
 def rgb_to_grayscale(image: Tensor, rgb_weights: Optional[Tensor] = None) -> Tensor:
@@ -126,6 +132,18 @@ def bgr_to_grayscale(image: Tensor) -> Tensor:
 
     image_rgb: Tensor = bgr_to_rgb(image)
     return rgb_to_grayscale(image_rgb)
+
+
+def _grayscale_to_rgb_fast(image: Tensor) -> Tensor:
+    # Efficiently expand channel dim to 3 using expand for no-copy if possible.
+    # Assumes input shape is (*,1,H,W)
+    # This avoids making three copies and concatenating.
+    shape = image.shape
+    # Only expand if last 3rd dim is 1 (already validated by calling code)
+    repeat_shape = list(shape)
+    repeat_shape[-3] = 3
+    # Use expand to avoid extra memory when possible
+    return image.expand(*repeat_shape)
 
 
 class GrayscaleToRgb(Module):
