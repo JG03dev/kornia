@@ -70,34 +70,56 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
+    x_shape = x.shape
+    sx = len(x_shape)
+    ss = len(shape)
+
+    # Fast path: detect '["*", "N"]' or '["*", ...]'
+    if ss == 2 and shape[0] == "*" and shape[1].isalpha():
+        # Accept shape of at least 1 dimension ending in N
+        if sx < 1:
+            if raises:
+                raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
+            return False
+        return True
+
+    # General case follows
+    if shape[0] == "*":
+        offset = ss - 1
+        x_shape_to_check = x_shape[-offset:]
         shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
+    elif shape[-1] == "*":
+        offset = ss - 1
+        x_shape_to_check = x_shape[:offset]
         shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
     else:
+        x_shape_to_check = x_shape
         shape_to_check = shape
-        x_shape_to_check = x.shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
             raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+        return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
-            continue
-        dim = int(dim_)
-        if x_shape_to_check[i] != dim:
-            if raises:
-                raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
+    # Inline int check for explicit dimensions ("2", "3") to avoid slow isnumeric etc.
+    for i, dim_ in enumerate(shape_to_check):
+        c0 = dim_[0]
+        # single character and digit
+        if len(dim_) == 1 and "0" <= c0 <= "9":
+            d = ord(c0) - 48  # avoid int(dim_)
+            if x_shape_to_check[i] != d:
+                if raises:
+                    raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
                 return False
+        elif len(dim_) > 1 and dim_.isnumeric():
+            d = int(dim_)
+            if x_shape_to_check[i] != d:
+                if raises:
+                    raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
+                return False
+        # otherwise: skip check (symbolic dim)
+        # (if you want, you can even further optimize by assigning known string-literals, e.g. "N", "H"...)
+
     return True
 
 
