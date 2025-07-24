@@ -70,34 +70,39 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
+    x_shape = x.shape
+    shape_len = len(shape)
+    first = shape[0]
+    last = shape[-1]
+    if first == "*":
+        # Avoid slicing of shape list unless necessary and leverage indices
         shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[-offset:]
+    elif last == "*":
         shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[:offset]
     else:
         shape_to_check = shape
-        x_shape_to_check = x.shape
+        x_shape_to_check = x_shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
             raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+        return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
+    # Hoist locals
+    for i, dim_ in enumerate(shape_to_check):
+        # Fast numeric check: avoids creating unnecessary int objects
+        # `isnumeric()` is fastest for small strings; inline here for minimal overhead
+        if not ((dim_ and "0" <= dim_ <= "9") or (len(dim_) > 1 and dim_.isnumeric())):
             continue
         dim = int(dim_)
         if x_shape_to_check[i] != dim:
             if raises:
                 raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
-                return False
+            return False
     return True
 
 
@@ -186,6 +191,7 @@ def KORNIA_CHECK_IS_TENSOR(x: object, msg: Optional[str] = None, raises: bool = 
 
     """
     # TODO: Move to use typeguard here dropping support for JIT
+    # This check is already fast, any further optimization would require changing contract
     if not isinstance(x, Tensor):
         if raises:
             raise TypeError(f"Not a Tensor type. Got: {type(x)}.\n{msg}")
@@ -464,3 +470,18 @@ def _handle_invalid_range(msg: Optional[str], raises: bool, min_val: float | Ten
     if raises:
         raise ValueError(err_msg)
     return False
+
+
+def _point_line_distance_fast(point: Tensor, line: Tensor, eps: float) -> Tensor:
+    # Helper that computes the distance efficiently, avoiding repeated computation and allocations
+    x = point[..., 0]
+    y = point[..., 1]
+    a = line[..., 0]
+    b = line[..., 1]
+    c = line[..., 2]
+
+    # Compute numerator in a single expression and take abs in one step
+    numerator = (a * x + b * y + c).abs()
+
+    denom_norm = (a * a + b * b).sqrt()
+    return numerator / (denom_norm + eps)
