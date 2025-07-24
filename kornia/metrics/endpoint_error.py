@@ -15,21 +15,21 @@
 # limitations under the License.
 #
 
+from __future__ import annotations
+
 import torch
 from torch import Tensor, nn
 
-from kornia.core.check import KORNIA_CHECK, KORNIA_CHECK_IS_TENSOR, KORNIA_CHECK_SHAPE
-
 
 def aepe(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean") -> torch.Tensor:
-    r"""Create a function that calculates the average endpoint error (AEPE) between 2 flow maps.
+    """Create a function that calculates the average endpoint error (AEPE) between 2 flow maps.
 
     AEPE is the endpoint error between two 2D vectors (e.g., optical flow).
     Given a h x w x 2 optical flow map, the AEPE is:
 
     .. math::
 
-        \text{AEPE}=\frac{1}{hw}\sum_{i=1, j=1}^{h, w}\sqrt{(I_{i,j,1}-T_{i,j,1})^{2}+(I_{i,j,2}-T_{i,j,2})^{2}}
+        \text{AEPE}=\frac{1}{hw}\\sum_{i=1, j=1}^{h, w}\\sqrt{(I_{i,j,1}-T_{i,j,1})^{2}+(I_{i,j,2}-T_{i,j,2})^{2}}
 
     Args:
         input: the input flow map with shape :math:`(*, 2)`.
@@ -51,26 +51,37 @@ def aepe(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean") -> 
         https://link.springer.com/content/pdf/10.1007/s11263-010-0390-2.pdf
 
     """
-    KORNIA_CHECK_IS_TENSOR(input)
-    KORNIA_CHECK_IS_TENSOR(target)
-    KORNIA_CHECK_SHAPE(input, ["*", "2"])
-    KORNIA_CHECK_SHAPE(target, ["*", "2"])
-    KORNIA_CHECK(
-        input.shape == target.shape, f"input and target shapes must be the same. Got: {input.shape} and {target.shape}"
-    )
+    # Fast combined type/shape/size check to eliminate most function call overhead in hot path
+    _aepe_fast_check(input, target)
 
-    epe: Tensor = ((input[..., 0] - target[..., 0]) ** 2 + (input[..., 1] - target[..., 1]) ** 2).sqrt()
+    # Main AEPE computation
+    diff = input - target
+    # Fused squared sum over last dim, then sqrt for endpoint error (avoids multiple indexing)
+    epe: Tensor = (diff.square().sum(dim=-1)).sqrt()
 
     if reduction == "mean":
-        epe = epe.mean()
+        return epe.mean()
     elif reduction == "sum":
-        epe = epe.sum()
+        return epe.sum()
     elif reduction == "none":
-        pass
+        return epe
     else:
         raise NotImplementedError("Invalid reduction option.")
 
-    return epe
+
+# Optimized type and shape check helper for AEPE to avoid repeated logic in the hot aepe path
+def _aepe_fast_check(input: Tensor, target: Tensor):
+    """Fast-path combined check for Tensor type, shape, and match for AEPE function."""
+    # Type check
+    if not (isinstance(input, Tensor) and isinstance(target, Tensor)):
+        raise TypeError(f"Not a Tensor type. Got: {type(input)} or {type(target)}.")
+
+    # Shape check: must end with 2 (the flow vector)
+    if input.shape[-1] != 2 or target.shape[-1] != 2:
+        raise TypeError(f"Last dimension must be 2. Got: input {input.shape}, target {target.shape}")
+    # Shape equality check
+    if input.shape != target.shape:
+        raise Exception(f"input and target shapes must be the same. Got: {input.shape} and {target.shape}")
 
 
 class AEPE(nn.Module):
