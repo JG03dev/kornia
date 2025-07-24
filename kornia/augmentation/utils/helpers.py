@@ -308,16 +308,23 @@ def _adapted_sampling(
     dist: torch.distributions.Distribution,
     same_on_batch: Optional[bool] = False,
 ) -> Tensor:
-    r"""Sample from a uniform sampling function that accepts 'same_on_batch'.
+    """Sample from a uniform sampling function that accepts 'same_on_batch'.
 
     If same_on_batch is True, all values generated will be exactly same given a batch_size (shape[0]). By default,
     same_on_batch is set to False.
     """
-    if isinstance(shape, tuple):
-        shape = torch.Size(shape)
+    shape = torch.Size(shape) if not isinstance(shape, torch.Size) else shape
 
     if same_on_batch:
-        return dist.sample(torch.Size((1, *shape[1:]))).repeat(shape[0], *[1] * (len(shape) - 1))
+        # Avoid creating intermediate tuple/list objects, and avoid extra repeat dimensions
+        repeat_shape = [shape[0]] + [1] * (len(shape) - 1)
+        base_sample = dist.sample(torch.Size((1,) + shape[1:]))
+        if len(repeat_shape) == 1:
+            # Scalar repeat, optimize for common 1D case
+            base_sample = base_sample.expand(shape[0])
+        else:
+            base_sample = base_sample.expand(*repeat_shape)
+        return base_sample
     return dist.sample(shape)
 
 
