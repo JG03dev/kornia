@@ -41,16 +41,18 @@ def _check_kernel_size(kernel_size: tuple[int, ...] | int, min_value: int = 0, a
 
 
 def _unpack_2d_ks(kernel_size: tuple[int, int] | int) -> tuple[int, int]:
+    # Fast path for int, skip extra conversion if already int.
     if isinstance(kernel_size, int):
-        ky = kx = kernel_size
-    else:
-        KORNIA_CHECK(len(kernel_size) == 2, "2D Kernel size should have a length of 2.")
-        ky, kx = kernel_size
-
-    ky = int(ky)
-    kx = int(kx)
-
-    return (ky, kx)
+        return kernel_size, kernel_size
+    # Only run KORNIA_CHECK if not int, and expect tuple.
+    KORNIA_CHECK(len(kernel_size) == 2, "2D Kernel size should have a length of 2.")
+    ky, kx = kernel_size
+    # It's rare but possible the tuple contains non-ints; only int() if needed
+    if type(ky) is not int:
+        ky = int(ky)
+    if type(kx) is not int:
+        kx = int(kx)
+    return ky, kx
 
 
 def _unpack_3d_ks(kernel_size: tuple[int, int, int] | int) -> tuple[int, int, int]:
@@ -68,12 +70,11 @@ def _unpack_3d_ks(kernel_size: tuple[int, int, int] | int) -> tuple[int, int, in
 
 
 def normalize_kernel2d(input: Tensor) -> Tensor:
-    r"""Normalize both derivative and smoothing kernel."""
+    """Normalize both derivative and smoothing kernel."""
     KORNIA_CHECK_SHAPE(input, ["*", "H", "W"])
-
-    norm = input.abs().sum(dim=-1).sum(dim=-1)
-
-    return input / (norm[..., None, None])
+    # Use keepdim=True so we only sum once and no .unsqueeze/..., saves time
+    norm = input.abs().sum(dim=(-1, -2), keepdim=True)
+    return input / norm
 
 
 def gaussian(

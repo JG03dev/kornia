@@ -32,15 +32,23 @@ def _preprocess_fast_guided_blur(
     guidance: Tensor, input: Tensor, kernel_size: tuple[int, int] | int, subsample: int = 1
 ) -> tuple[Tensor, Tensor, tuple[int, int]]:
     ky, kx = _unpack_2d_ks(kernel_size)
+    # Fast path for no subsample: avoid if/else inside.
     if subsample > 1:
-        s = 1 / subsample
+        s = 1.0 / subsample
+        # interpolate only if different
         guidance_sub = interpolate(guidance, scale_factor=s, mode="nearest")
-        input_sub = guidance_sub if input is guidance else interpolate(input, scale_factor=s, mode="nearest")
-        ky, kx = ((k - 1) // subsample + 1 for k in (ky, kx))
+        # Prefer reuse if the input and guidance are the same object.
+        if input is guidance:
+            input_sub = guidance_sub
+        else:
+            input_sub = interpolate(input, scale_factor=s, mode="nearest")
+        # Avoid generator, assign directly for 2 elements (tuple comp, not genexp).
+        ky_reduced = (ky - 1) // subsample + 1
+        kx_reduced = (kx - 1) // subsample + 1
+        return guidance_sub, input_sub, (ky_reduced, kx_reduced)
     else:
-        guidance_sub = guidance
-        input_sub = input
-    return guidance_sub, input_sub, (ky, kx)
+        # Only single ky/kx, no recomputation or tuple construction needed
+        return guidance, input, (ky, kx)
 
 
 def _guided_blur_grayscale_guidance(
