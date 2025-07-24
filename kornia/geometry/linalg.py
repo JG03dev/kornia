@@ -19,9 +19,9 @@ from __future__ import annotations
 
 import torch
 
-from kornia.core import Tensor, zeros_like
+from kornia.core import Tensor, pad, zeros_like
 from kornia.core.check import KORNIA_CHECK_IS_TENSOR, KORNIA_CHECK_SHAPE
-from kornia.geometry.conversions import convert_points_from_homogeneous, convert_points_to_homogeneous
+from kornia.geometry.conversions import convert_points_from_homogeneous
 
 __all__ = [
     "batched_dot_product",
@@ -173,7 +173,7 @@ def relative_transformation(trans_01: Tensor, trans_02: Tensor) -> Tensor:
 
 
 def transform_points(trans_01: Tensor, points_1: Tensor) -> Tensor:
-    r"""Apply transformations to a set of points.
+    """Apply transformations to a set of points.
 
     Args:
         trans_01: tensor for transformations of shape
@@ -192,33 +192,41 @@ def transform_points(trans_01: Tensor, points_1: Tensor) -> Tensor:
         >>> points_0 = transform_points(trans_01, points_1)  # BxNx3
 
     """
+    # Keep fast, single type checks
     KORNIA_CHECK_IS_TENSOR(trans_01)
     KORNIA_CHECK_IS_TENSOR(points_1)
-    if not trans_01.shape[0] == points_1.shape[0] and trans_01.shape[0] != 1:
+
+    # Fastest batch size verification
+    b0, b1 = trans_01.shape[0], points_1.shape[0]
+    if b0 != b1 and b0 != 1:
         raise ValueError(
             f"Input batch size must be the same for both tensors or 1. Got {trans_01.shape} and {points_1.shape}"
         )
-    if not trans_01.shape[-1] == (points_1.shape[-1] + 1):
+    if trans_01.shape[-1] != points_1.shape[-1] + 1:
         raise ValueError(f"Last input dimensions must differ by one unit Got{trans_01} and {points_1}")
 
-    # We reshape to BxNxD in case we get more dimensions, e.g., MxBxNxD
-    shape_inp = list(points_1.shape)
-    points_1 = points_1.reshape(-1, points_1.shape[-2], points_1.shape[-1])
-    trans_01 = trans_01.reshape(-1, trans_01.shape[-2], trans_01.shape[-1])
-    # We expand trans_01 to match the dimensions needed for bmm. repeats input division is cast
-    # to integer so onnx doesn't record the value as a tensor and get a device mismatch
-    trans_01 = torch.repeat_interleave(trans_01, repeats=int(points_1.shape[0] // trans_01.shape[0]), dim=0)
-    # to homogeneous
-    points_1_h = convert_points_to_homogeneous(points_1)  # BxNxD+1
-    # transform coordinates
-    points_0_h = torch.bmm(points_1_h, trans_01.permute(0, 2, 1))
-    points_0_h = torch.squeeze(points_0_h, dim=-1)
-    # to euclidean
-    points_0 = convert_points_from_homogeneous(points_0_h)  # BxNxD
-    # reshape to the input shape
-    shape_inp[-2] = points_0.shape[-2]
-    shape_inp[-1] = points_0.shape[-1]
-    points_0 = points_0.reshape(shape_inp)
+    # Reshape for batched bmm. Only create new shape list as needed.
+    s_points_1 = points_1.shape
+    # Avoid copying the list if not needed
+    batch_flat = points_1.reshape(-1, points_1.shape[-2], points_1.shape[-1])
+    trans_flat = trans_01.reshape(-1, trans_01.shape[-2], trans_01.shape[-1])
+    reps = batch_flat.shape[0] // trans_flat.shape[0]
+    if reps > 1:
+        # Only repeat if needed
+        trans_flat = torch.repeat_interleave(trans_flat, repeats=reps, dim=0)
+    # Homogenize
+    points_1_h = pad(batch_flat, [0, 1], "constant", 1.0)
+    # Batched transform: permute in place for memory efficiency
+    points_0_h = torch.bmm(points_1_h, trans_flat.permute(0, 2, 1))
+    # No squeeze: output should always be 3D since we pad with one dim (and don't add singleton dims)
+    # Dehomogenize as efficiently as possible
+    points_0 = convert_points_from_homogeneous(points_0_h)
+    # Only call reshape if needed
+    if points_0.shape != s_points_1[:-1] + (points_0.shape[-1],):
+        # Compute correct shape with last dimension replaced
+        shape_out = list(s_points_1)
+        shape_out[-1] = points_0.shape[-1]
+        points_0 = points_0.reshape(shape_out)
     return points_0
 
 
