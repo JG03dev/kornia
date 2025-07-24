@@ -223,7 +223,7 @@ def transform_points(trans_01: Tensor, points_1: Tensor) -> Tensor:
 
 
 def point_line_distance(point: Tensor, line: Tensor, eps: float = 1e-9) -> Tensor:
-    r"""Return the distance from points to lines.
+    """Return the distance from points to lines.
 
     Args:
        point: (possibly homogeneous) points :math:`(*, N, 2 or 3)`.
@@ -237,22 +237,17 @@ def point_line_distance(point: Tensor, line: Tensor, eps: float = 1e-9) -> Tenso
     KORNIA_CHECK_IS_TENSOR(point)
     KORNIA_CHECK_IS_TENSOR(line)
 
-    if point.shape[-1] not in (2, 3):
+    # Avoid slow shape-checking logic in small hot paths
+    # Fast path by doing direct comparison
+    point_last = point.shape[-1]
+    if point_last != 2 and point_last != 3:
         raise ValueError(f"pts must be a (*, 2 or 3) tensor. Got {point.shape}")
-
     if line.shape[-1] != 3:
         raise ValueError(f"lines must be a (*, 3) tensor. Got {line.shape}")
 
-    # Using in-place operations to improve performance
-    numerator = line[..., 0] * point[..., 0]
-    numerator += line[..., 1] * point[..., 1]
-    numerator += line[..., 2]
-    numerator.abs_()
-
-    # Avoid computing norm multiple times by saving its value
-    denom_norm = (line[..., 0].square() + line[..., 1].square()).sqrt()
-
-    return numerator / (denom_norm + eps)
+    # Fast path for both 2D and homogeneous 3D points
+    # Use helper for optimized computation
+    return _point_line_distance_fast(point, line, eps)
 
 
 def batched_dot_product(x: Tensor, y: Tensor, keepdim: bool = False) -> Tensor:
@@ -283,6 +278,21 @@ def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float =
     KORNIA_CHECK_SHAPE(y, ["*", "N"])
 
     return (x - y + eps).pow(2).sum(-1, keepdim).sqrt()
+
+
+def _point_line_distance_fast(point: Tensor, line: Tensor, eps: float) -> Tensor:
+    # Helper that computes the distance efficiently, avoiding repeated computation and allocations
+    x = point[..., 0]
+    y = point[..., 1]
+    a = line[..., 0]
+    b = line[..., 1]
+    c = line[..., 2]
+
+    # Compute numerator in a single expression and take abs in one step
+    numerator = (a * x + b * y + c).abs()
+
+    denom_norm = (a * a + b * b).sqrt()
+    return numerator / (denom_norm + eps)
 
 
 # aliases
