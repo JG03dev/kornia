@@ -22,7 +22,8 @@ import warnings
 from dataclasses import asdict, fields, is_dataclass
 from functools import wraps
 from inspect import isclass, isfunction
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union, overload
+from typing import (TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple,
+                    Type, TypeVar, Union, overload)
 
 import torch
 from torch.linalg import inv_ex
@@ -145,12 +146,12 @@ def _extract_device_dtype(tensor_list: List[Optional[Any]]) -> Tuple[torch.devic
 
     """
     device, dtype = None, None
-    for tensor in tensor_list:
-        if tensor is not None:
-            if not isinstance(tensor, (Tensor,)):
+    for tensor_v in tensor_list:
+        if tensor_v is not None:
+            if not isinstance(tensor_v, (Tensor,)):
                 continue
-            _device = tensor.device
-            _dtype = tensor.dtype
+            _device = tensor_v.device
+            _dtype = tensor_v.dtype
             if device is None and dtype is None:
                 device = _device
                 dtype = _dtype

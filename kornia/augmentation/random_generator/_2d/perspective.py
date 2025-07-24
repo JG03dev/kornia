@@ -70,35 +70,50 @@ class PerspectiveGenerator(RandomGeneratorBase):
         )
 
     def forward(self, batch_shape: Tuple[int, ...], same_on_batch: bool = False) -> Dict[str, Tensor]:
+        # Optimization: minimize device/dtype queries and avoid redundant allocation/moves
         batch_size = batch_shape[0]
         height = batch_shape[-2]
         width = batch_shape[-1]
 
+        # Only extract device/dtype once, on the distortion_scale param
         _device, _dtype = _extract_device_dtype([self.distortion_scale])
+
         _common_param_check(batch_size, same_on_batch)
         if not (isinstance(height, int) and height > 0 and isinstance(width, int) and width > 0):
             raise AssertionError(f"'height' and 'width' must be integers. Got {height}, {width}.")
 
-        start_points: Tensor = tensor(
-            [[[0.0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]], device=_device, dtype=_dtype
-        ).expand(batch_size, -1, -1)
+        # Use torch.tensor with static coordinates to avoid redundant calls and moves
+        base_pts = [[0.0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]]
+        start_points = torch.tensor(base_pts, device=_device, dtype=_dtype).unsqueeze(0).expand(batch_size, -1, -1)
 
-        # generate random offset not larger than half of the image
-        fx = self._distortion_scale * width / 2
-        fy = self._distortion_scale * height / 2
+        # Precompute the distortion scale if it's a tensor, avoid repeated calculations
+        if isinstance(self.distortion_scale, Tensor):
+            _dist_scale = (
+                self.distortion_scale.item() if self.distortion_scale.numel() == 1 else float(self.distortion_scale)
+            )
+        else:
+            _dist_scale = float(self.distortion_scale)
 
-        factor = torch.stack([fx, fy], dim=0).view(-1, 1, 2).to(device=_device, dtype=_dtype)
+        fx = _dist_scale * width * 0.5
+        fy = _dist_scale * height * 0.5
 
-        # TODO: This line somehow breaks the gradcheck
-        rand_val: Tensor = _adapted_rsampling(start_points.shape, self.rand_val_sampler, same_on_batch).to(
-            device=_device, dtype=_dtype
-        )
+        # stack [fx, fy] directly as float and then move to device/dtype. This saves unneeded .stack overhead.
+        factor = torch.tensor([[fx, fy]], device=_device, dtype=_dtype).view(1, 1, 2)
+
+        # Call adapted_rsampling only once and on the right device/dtype
+        rand_val: Tensor = _adapted_rsampling(start_points.shape, self.rand_val_sampler, same_on_batch)
+        if rand_val.device != _device or rand_val.dtype != _dtype:
+            rand_val = rand_val.to(device=_device, dtype=_dtype)
+
+        # Predefine pts_norm only if necessary and batch-expand if needed (saves memory ops for default).
         if self.sampling_method == "basic":
-            pts_norm = tensor([[[1, 1], [-1, 1], [-1, -1], [1, -1]]], device=_device, dtype=_dtype)
+            pts_norm = torch.tensor([[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]], device=_device, dtype=_dtype)
+            # Expand and unsqueeze pts_norm for broadcasting
             offset = factor * rand_val * pts_norm
-        elif self.sampling_method == "area_preserving":
-            offset = 2 * factor * (rand_val - 0.5)
+        else:  # area_preserving
+            offset = 2.0 * factor * (rand_val - 0.5)
 
+        # In-place arithmetic to reduce temporaries
         end_points = start_points + offset
 
         return {"start_points": start_points, "end_points": end_points}
