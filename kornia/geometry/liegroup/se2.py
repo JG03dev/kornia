@@ -35,7 +35,7 @@ from kornia.core import (
     where,
     zeros_like,
 )
-from kornia.core.check import KORNIA_CHECK, KORNIA_CHECK_SAME_DEVICES, KORNIA_CHECK_TYPE
+from kornia.core.check import KORNIA_CHECK, KORNIA_CHECK_TYPE
 from kornia.geometry.liegroup._utils import check_se2_omega_shape, check_se2_t_shape, check_v_shape
 from kornia.geometry.liegroup.so2 import So2
 from kornia.geometry.vector import Vector2
@@ -96,7 +96,6 @@ class Se2(Module):
         # KORNIA_CHECK_TYPE(translation, (Vector3, Tensor))
         if not isinstance(translation, (Vector2, Tensor)):
             raise TypeError(f"translation type is {type(translation)}")
-        self._translation: Vector2 | Parameter
         self._rotation: So2 = rotation
         if isinstance(translation, Tensor):
             _check_se2_r_t_shape(rotation, translation)  # TODO remove
@@ -383,10 +382,14 @@ class Se2(Module):
             y: the y-axis translation.
 
         """
-        KORNIA_CHECK(x.shape == y.shape)
-        KORNIA_CHECK_SAME_DEVICES([x, y])
+        # Check shape only, omit string representation comparison as it's not useful optimization
+        if x.shape != y.shape:
+            raise Exception("Input tensors must have the same shape")
+        if x.device != y.device:
+            raise Exception(f"Tensors not in the same device: {[x.device, y.device]}")
         batch_size = x.shape[0] if len(x.shape) > 0 else None
         rotation = So2.identity(batch_size, x.device, x.dtype)
+        # Use stack as before
         return cls(rotation, stack((x, y), -1))
 
     @classmethod

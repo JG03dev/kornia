@@ -243,12 +243,16 @@ class So2(Module):
             tensor([1.+0.j, 1.+0.j], requires_grad=True)
 
         """
-        real_data = tensor(1.0, device=device, dtype=dtype)
-        imag_data = tensor(0.0, device=device, dtype=dtype)
-        if batch_size is not None:
+        # Optimized: use torch.ones/zeros for batch and type
+        import torch
+
+        if batch_size is None:
+            real_data = tensor(1.0, device=device, dtype=dtype)
+            imag_data = tensor(0.0, device=device, dtype=dtype)
+        else:
             KORNIA_CHECK(batch_size >= 1, msg="batch_size must be positive")
-            real_data = real_data.repeat(batch_size)
-            imag_data = imag_data.repeat(batch_size)
+            real_data = torch.ones(batch_size, device=device, dtype=dtype)
+            imag_data = torch.zeros(batch_size, device=device, dtype=dtype)
         return cls(complex(real_data, imag_data))
 
     def inverse(self) -> So2:
