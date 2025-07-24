@@ -16,6 +16,8 @@
 #
 
 # inspired by: shttps://github.com/farm-ng/sophus-rs/blob/main/src/sensor/kannala_brandt.rs
+from __future__ import annotations
+
 import kornia.core as ops
 from kornia.core import Tensor
 from kornia.core.check import KORNIA_CHECK_SHAPE
@@ -194,11 +196,11 @@ def undistort_points_kannala_brandt(distorted_points_in_camera: Tensor, params: 
 
 
 def dx_distort_points_kannala_brandt(projected_points_in_camera_z1_plane: Tensor, params: Tensor) -> Tensor:
-    r"""Compute the derivative of the x distortion with respect to the x coordinate.
+    """Compute the derivative of the x distortion with respect to the x coordinate.
 
     .. math::
-        \frac{\partial u}{\partial x} =
-        \begin{bmatrix} f_x & 0 \\ 0 & f_y \end{bmatrix}
+        \frac{\\partial u}{\\partial x} =
+        \begin{bmatrix} f_x & 0 \\ 0 & f_y \\end{bmatrix}
 
     Args:
         projected_points_in_camera_z1_plane: Tensor representing the points to distort with shape (..., 2).
@@ -215,6 +217,7 @@ def dx_distort_points_kannala_brandt(projected_points_in_camera_z1_plane: Tensor
                 [-213.5573,  165.7147]])
 
     """
+    # These checks are heavy in profiler; recommend to skip for production, but required by contract:
     KORNIA_CHECK_SHAPE(projected_points_in_camera_z1_plane, ["*", "2"])
     KORNIA_CHECK_SHAPE(params, ["*", "8"])
 
@@ -228,36 +231,51 @@ def dx_distort_points_kannala_brandt(projected_points_in_camera_z1_plane: Tensor
     k2 = params[..., 6]
     k3 = params[..., 7]
 
-    # TODO: return identity matrix if a and b are zero
-    # radius_sq = a ** 2 + b ** 2
+    # Compute needed powers only once and reuse
+    c0 = a * a  # a^2
+    c1 = b * b  # b^2
+    c2 = c0 + c1  # r^2
+    sqrt_c2 = c2.sqrt()  # r
+    atan_sqrt_c2 = sqrt_c2.atan()  # atan(r)
+    c5 = atan_sqrt_c2
+    c6 = c5 * c5  # atan(r)^2
+    c8 = c6 * c6  # atan(r)^4
+    c10 = c6 * c8  # atan(r)^6 (since c8=pow(4), c6=pow(2))
+    c12 = c8 * c8  # atan(r)^8
 
-    c0 = a.pow(2.0)
-    c1 = b.pow(2.0)
-    c2 = c0 + c1
-    c3 = c2.pow(5.0 / 2.0)
-    c4 = c2 + 1.0
-    c5 = c2.sqrt().atan()
-    c6 = c5.pow(2.0)
     c7 = c6 * k0
-    c8 = c5.pow(4.0)
     c9 = c8 * k1
-    c10 = c5.pow(6.0)
     c11 = c10 * k2
-    c12 = c5.pow(8.0) * k3
-    c13 = 1.0 * c4 * c5 * (c11 + c12 + c7 + c9 + 1.0)
-    c14 = c13 * c3
-    c15 = c2.pow(3.0 / 2.0)
-    c16 = c13 * c15
-    c17 = 1.0 * c11 + 1.0 * c12 + 2.0 * c6 * (4.0 * c10 * k3 + 2.0 * c6 * k1 + 3.0 * c8 * k2 + k0)
-    c18 = c17 * c2.pow(2.0)
-    c19 = 1.0 / c4
-    c20 = c19 / c2.pow(3.0)
-    c21 = a * b * c19 * (-c13 * c2 + c15 * c17) / c3
+    c13_k3 = c12 * k3
 
-    return ops.stack(
-        [
-            ops.stack([c20 * fx * (-c0 * c16 + c0 * c18 + c14), c21 * fx], dim=-1),
-            ops.stack([c21 * fy, c20 * fy * (-c1 * c16 + c1 * c18 + c14)], dim=-1),
-        ],
-        dim=-2,
-    )
+    c4 = c2 + 1.0
+
+    # Precompute sum for efficiency
+    poly_sum = c11 + c13_k3 + c7 + c9 + 1.0
+
+    c3 = c2 ** (2.5)  # (r^2)^(5/2)
+    c13 = c4 * c5 * poly_sum  # 1.0 * c4 * c5 * poly_sum (elided explicit float multiplication)
+    c14 = c13 * c3
+    c15 = c2 ** (1.5)  # (r^2)^(3/2)
+    c16 = c13 * c15
+
+    # Compute c17 in two steps to eliminate unnecessary temp storage
+    # 2.0 * c6 * (4.0 * c10 * k3 + 2.0 * c6 * k1 + 3.0 * c8 * k2 + k0)
+    c6_2 = 2.0 * c6
+    t17 = 4.0 * c10 * k3 + 2.0 * c6 * k1 + 3.0 * c8 * k2 + k0
+    c17 = c11 + c13_k3 + c6_2 * t17
+
+    c18 = c17 * (c2 * c2)  # c2^2
+
+    c19 = 1.0 / c4
+
+    c2_pow3 = c2 * c2 * c2
+    c20 = c19 / c2_pow3
+
+    c21 = a * b * c19 * (-c13 * c2 + c15 * c17)
+    c21 = c21 / c3
+
+    # Out-of-place ops.stack can work with tuple to save a list
+    row0 = ops.stack((c20 * fx * (-c0 * c16 + c0 * c18 + c14), c21 * fx), dim=-1)
+    row1 = ops.stack((c21 * fy, c20 * fy * (-c1 * c16 + c1 * c18 + c14)), dim=-1)
+    return ops.stack((row0, row1), dim=-2)
