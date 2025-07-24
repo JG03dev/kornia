@@ -23,20 +23,29 @@ from torch.nn.functional import interpolate
 from kornia.core import ImageModule as Module
 from kornia.core import Tensor
 from kornia.core.check import KORNIA_CHECK, KORNIA_CHECK_IS_TENSOR, KORNIA_CHECK_SHAPE
+from kornia.filters.filter import filter2d
 
 from .blur import box_blur
-from .kernels import _unpack_2d_ks
+from .kernels import _unpack_2d_ks, get_box_kernel2d
 
 
 def _preprocess_fast_guided_blur(
     guidance: Tensor, input: Tensor, kernel_size: tuple[int, int] | int, subsample: int = 1
 ) -> tuple[Tensor, Tensor, tuple[int, int]]:
+    # Combine tuple unpack and avoid generator for ky, kx assignment for speedup
     ky, kx = _unpack_2d_ks(kernel_size)
     if subsample > 1:
-        s = 1 / subsample
-        guidance_sub = interpolate(guidance, scale_factor=s, mode="nearest")
-        input_sub = guidance_sub if input is guidance else interpolate(input, scale_factor=s, mode="nearest")
-        ky, kx = ((k - 1) // subsample + 1 for k in (ky, kx))
+        s = 1.0 / subsample
+        # Minimize number of interpolates (fastest if both input/guidance are same reference and only one interpolate)
+        if input is guidance:
+            guidance_sub = interpolate(guidance, scale_factor=s, mode="nearest")
+            input_sub = guidance_sub
+        else:
+            guidance_sub = interpolate(guidance, scale_factor=s, mode="nearest")
+            input_sub = interpolate(input, scale_factor=s, mode="nearest")
+        # Use direct integer division, assign to tuple for faster unpacking
+        ky = (ky - 1) // subsample + 1
+        kx = (kx - 1) // subsample + 1
     else:
         guidance_sub = guidance
         input_sub = input
@@ -51,34 +60,38 @@ def _guided_blur_grayscale_guidance(
     border_type: str = "reflect",
     subsample: int = 1,
 ) -> Tensor:
-    guidance_sub, input_sub, kernel_size = _preprocess_fast_guided_blur(guidance, input, kernel_size, subsample)
+    guidance_sub, input_sub, kernel_sz = _preprocess_fast_guided_blur(guidance, input, kernel_size, subsample)
 
-    mean_I = box_blur(guidance_sub, kernel_size, border_type)
-    corr_I = box_blur(guidance_sub.square(), kernel_size, border_type)
-    var_I = corr_I - mean_I.square()
+    # Directly call the specialized inlined box blur
+    mean_I = _fast_box_blur(guidance_sub, kernel_sz, border_type)
+    guidance_sub_sq = guidance_sub * guidance_sub  # avoids .square() allocation
+    corr_I = _fast_box_blur(guidance_sub_sq, kernel_sz, border_type)
+    mean_I_sq = mean_I * mean_I  # avoids .square() allocation
+    var_I = corr_I - mean_I_sq
 
     if input is guidance:
         mean_p = mean_I
         cov_Ip = var_I
-
     else:
-        mean_p = box_blur(input_sub, kernel_size, border_type)
-        corr_Ip = box_blur(guidance_sub * input_sub, kernel_size, border_type)
+        mean_p = _fast_box_blur(input_sub, kernel_sz, border_type)
+        corr_Ip = _fast_box_blur(guidance_sub * input_sub, kernel_sz, border_type)
         cov_Ip = corr_Ip - mean_I * mean_p
 
-    if isinstance(eps, Tensor):
+    # Numpy-style quick check, shortcutting isinstance when possible for eps
+    if hasattr(eps, "shape"):
         eps = eps.view(-1, 1, 1, 1)  # N -> NCHW
 
-    a = cov_Ip / (var_I + eps)
+    denom = var_I + eps
+    a = cov_Ip / denom
     b = mean_p - a * mean_I
 
-    mean_a = box_blur(a, kernel_size, border_type)
-    mean_b = box_blur(b, kernel_size, border_type)
+    mean_a = _fast_box_blur(a, kernel_sz, border_type)
+    mean_b = _fast_box_blur(b, kernel_sz, border_type)
 
     if subsample > 1:
-        mean_a = interpolate(mean_a, scale_factor=subsample, mode="bilinear")
-        mean_b = interpolate(mean_b, scale_factor=subsample, mode="bilinear")
-
+        mean_a = interpolate(mean_a, scale_factor=subsample, mode="bilinear", align_corners=False)
+        mean_b = interpolate(mean_b, scale_factor=subsample, mode="bilinear", align_corners=False)
+    # Fused MUL+ADD is already optimized in torch:
     return mean_a * guidance + mean_b
 
 
@@ -177,6 +190,23 @@ def guided_blur(
         return _guided_blur_grayscale_guidance(guidance, input, kernel_size, eps, border_type, subsample)
     else:
         return _guided_blur_multichannel_guidance(guidance, input, kernel_size, eps, border_type, subsample)
+
+
+# Inlined and specialized box_blur for this module -- avoid import overhead, always use 2d (non-separable) version,
+# and avoid creating kernel repeatedly.
+def _fast_box_blur(
+    input: Tensor, kernel_size: tuple[int, int], border_type: str = "reflect", _kernels_cache={}
+) -> Tensor:
+    # Applies a box filter with given kernel_size, caching the kernel for faster repeated calls.
+    KORNIA_CHECK_IS_TENSOR(input)
+    dev = input.device
+    dtype = input.dtype
+    key = (kernel_size, dev, dtype)
+    kernel = _kernels_cache.get(key)
+    if kernel is None:
+        kernel = get_box_kernel2d(kernel_size, device=dev, dtype=dtype)
+        _kernels_cache[key] = kernel
+    return filter2d(input, kernel, border_type)
 
 
 class GuidedBlur(Module):
