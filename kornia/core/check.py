@@ -70,34 +70,39 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
+    x_shape = x.shape
+    shape_len = len(shape)
+    first = shape[0]
+    last = shape[-1]
+    if first == "*":
+        # Avoid slicing of shape list unless necessary and leverage indices
         shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[-offset:]
+    elif last == "*":
         shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[:offset]
     else:
         shape_to_check = shape
-        x_shape_to_check = x.shape
+        x_shape_to_check = x_shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
             raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+        return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
+    # Hoist locals
+    for i, dim_ in enumerate(shape_to_check):
+        # Fast numeric check: avoids creating unnecessary int objects
+        # `isnumeric()` is fastest for small strings; inline here for minimal overhead
+        if not ((dim_ and "0" <= dim_ <= "9") or (len(dim_) > 1 and dim_.isnumeric())):
             continue
         dim = int(dim_)
         if x_shape_to_check[i] != dim:
             if raises:
                 raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
-                return False
+            return False
     return True
 
 
@@ -458,9 +463,11 @@ def KORNIA_CHECK_LAF(laf: Tensor, raises: bool = True) -> bool:
 
 def _handle_invalid_range(msg: Optional[str], raises: bool, min_val: float | Tensor, max_val: float | Tensor) -> bool:
     """Helper function to handle invalid range cases."""
-    err_msg = f"Invalid image value range. Expect [0, 1] but got [{min_val}, {max_val}]."
-    if msg is not None:
-        err_msg += f"\n{msg}"
+    # Only build err_msg if needed for exception or there is a message to return
     if raises:
+        if msg is None:
+            err_msg = f"Invalid image value range. Expect [0, 1] but got [{min_val}, {max_val}]."
+        else:
+            err_msg = f"Invalid image value range. Expect [0, 1] but got [{min_val}, {max_val}].\n{msg}"
         raise ValueError(err_msg)
     return False
