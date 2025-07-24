@@ -31,9 +31,10 @@ def _gradient_x(img: torch.Tensor) -> torch.Tensor:
 
 
 def _gradient_y(img: torch.Tensor) -> torch.Tensor:
-    if len(img.shape) != 4:
+    if img.ndimension() != 4:
         raise AssertionError(img.shape)
-    return img[:, :, :-1, :] - img[:, :, 1:, :]
+    # Use in-place subtraction to reduce memory usage for better speed and memory efficiency
+    return torch.sub(img[:, :, :-1, :], img[:, :, 1:, :])
 
 
 def inverse_depth_smoothness_loss(idepth: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
