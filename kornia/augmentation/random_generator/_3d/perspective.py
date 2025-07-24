@@ -22,7 +22,7 @@ from torch.distributions import Uniform
 
 from kornia.augmentation.random_generator.base import RandomGeneratorBase
 from kornia.augmentation.utils import _adapted_rsampling, _common_param_check
-from kornia.core import Tensor, as_tensor, stack, tensor
+from kornia.core import Tensor, as_tensor, tensor
 from kornia.utils.helpers import _extract_device_dtype
 
 
@@ -69,39 +69,64 @@ class PerspectiveGenerator3D(RandomGeneratorBase):
         _common_param_check(batch_size, same_on_batch)
         _device, _dtype = _extract_device_dtype([self.distortion_scale])
 
-        start_points: Tensor = tensor(
-            [
-                [
-                    [0.0, 0, 0],
-                    [width - 1, 0, 0],
-                    [width - 1, height - 1, 0],
-                    [0, height - 1, 0],
-                    [0.0, 0, depth - 1],
-                    [width - 1, 0, depth - 1],
-                    [width - 1, height - 1, depth - 1],
-                    [0, height - 1, depth - 1],
-                ]
-            ],
+        # -- OPTIMIZATION: Prepare the point grids directly as arrays and cast with torch.as_tensor on target device/dtype to avoid slow tensor() calls --
+
+        # static -- shape (8, 3)
+        _start_points_data = [
+            [0.0, 0, 0],  # Front-top-left
+            [width - 1, 0, 0],  # Front-top-right
+            [width - 1, height - 1, 0],  # Front-bottom-right
+            [0, height - 1, 0],  # Front-bottom-left
+            [0.0, 0, depth - 1],  # Back-top-left
+            [width - 1, 0, depth - 1],  # Back-top-right
+            [width - 1, height - 1, depth - 1],  # Back-bottom-right
+            [0, height - 1, depth - 1],  # Back-bottom-left
+        ]
+        # Static, shape: (8, 3)
+        _pts_norm_data = [
+            [1, 1, 1],  # Front-top-left
+            [-1, 1, 1],  # Front-top-right
+            [-1, -1, 1],  # Front-bottom-right
+            [1, -1, 1],  # Front-bottom-left
+            [1, 1, -1],  # Back-top-left
+            [-1, 1, -1],  # Back-top-right
+            [-1, -1, -1],  # Back-bottom-right
+            [1, -1, -1],  # Back-bottom-left
+        ]
+
+        # Fast tensor allocation for start points (shape: (1, 8, 3), then expand to (B, 8, 3))
+        start_points = torch.as_tensor([_start_points_data], device=_device, dtype=_dtype).expand(batch_size, -1, -1)
+
+        # Fast tensor allocation for pts_norm (shape: (1, 8, 3)), no need to expand as broadcasting will work
+        pts_norm = torch.as_tensor(
+            [_pts_norm_data],
             device=_device,
             dtype=_dtype,
-        ).expand(batch_size, -1, -1)
-
-        # generate random offset not larger than half of the image
-        fx = self._distortion_scale * width / 2
-        fy = self._distortion_scale * height / 2
-        fz = self._distortion_scale * depth / 2
-
-        factor = stack([fx, fy, fz], 0).view(-1, 1, 3).to(device=_device, dtype=_dtype)
-
-        rand_val: Tensor = _adapted_rsampling(start_points.shape, self.rand_sampler, same_on_batch).to(
-            device=_device, dtype=_dtype
         )
 
-        pts_norm = tensor(
-            [[[1, 1, 1], [-1, 1, 1], [-1, -1, 1], [1, -1, 1], [1, 1, -1], [-1, 1, -1], [-1, -1, -1], [1, -1, -1]]],
-            device=_device,
-            dtype=_dtype,
-        )
-        end_points = start_points + factor * rand_val * pts_norm
+        # Precompute the distortion factors efficiently
+        if isinstance(self.distortion_scale, torch.Tensor):
+            ds = self.distortion_scale.item()
+        else:
+            ds = self.distortion_scale
+
+        fx = ds * width * 0.5
+        fy = ds * height * 0.5
+        fz = ds * depth * 0.5
+
+        # Batch is dim0, so shape is (1, 1, 3)
+        factor = torch.tensor([[fx, fy, fz]], device=_device, dtype=_dtype).view(1, 1, 3)
+
+        # Efficient random sample generation
+        shape = (batch_size, 8, 3)
+        rand_val = _adapted_rsampling(shape, self.rand_sampler, same_on_batch)
+        if rand_val.device != _device or rand_val.dtype != _dtype:
+            rand_val = rand_val.to(device=_device, dtype=_dtype)
+
+        # -- OPTIMIZATION: Use in-place operations to save memory and avoid unnecessary temporaries for element-wise operations --
+        # pts_norm and factor will broadcast to (B, 8, 3) as needed
+        # Instead of multiple multiplications, do it in one call using broadcasting
+        # end_points = start_points + factor * rand_val * pts_norm
+        end_points = torch.addcmul(start_points, factor * pts_norm, rand_val)  # a + b * c (elementwise)
 
         return {"start_points": start_points, "end_points": end_points}
