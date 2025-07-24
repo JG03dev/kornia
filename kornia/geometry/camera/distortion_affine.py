@@ -17,6 +17,8 @@
 
 """Module containing the affine distortion model."""
 
+from __future__ import annotations
+
 # inspired by: https://github.com/farm-ng/sophus-rs/blob/main/src/sensor/affine.rs
 import kornia.core as ops
 from kornia.core import Tensor
@@ -24,13 +26,13 @@ from kornia.core.check import KORNIA_CHECK_SHAPE
 
 
 def distort_points_affine(projected_points_in_camera_z1_plane: Tensor, params: Tensor) -> Tensor:
-    r"""Distort one or more points from the canonical z=1 plane into the camera frame.
+    """Distort one or more points from the canonical z=1 plane into the camera frame.
 
     .. math::
-        \begin{bmatrix} u \\ v \end{bmatrix} =
-        \begin{bmatrix} f_x & 0 \\ 0 & f_y \end{bmatrix}
-        \begin{bmatrix} x \\ y \end{bmatrix} +
-        \begin{bmatrix} c_x \\ c_y \end{bmatrix}
+        \begin{bmatrix} u \\ v \\end{bmatrix} =
+        \begin{bmatrix} f_x & 0 \\ 0 & f_y \\end{bmatrix}
+        \begin{bmatrix} x \\ y \\end{bmatrix} +
+        \begin{bmatrix} c_x \\ c_y \\end{bmatrix}
 
     Args:
         projected_points_in_camera_z1_plane: Tensor representing the points to distort with shape (..., 2).
@@ -55,10 +57,8 @@ def distort_points_affine(projected_points_in_camera_z1_plane: Tensor, params: T
     fx, fy = params[..., 0], params[..., 1]
     cx, cy = params[..., 2], params[..., 3]
 
-    u = fx * x + cx
-    v = fy * y + cy
-
-    return ops.stack([u, v], dim=-1)
+    # Fused u/v stack
+    return ops.stack([fx * x + cx, fy * y + cy], dim=-1)
 
 
 def undistort_points_affine(distorted_points_in_camera: Tensor, params: Tensor) -> Tensor:
@@ -129,3 +129,31 @@ def dx_distort_points_affine(projected_points_in_camera_z1_plane: Tensor, params
     zeros = ops.zeros_like(fx)
 
     return ops.stack([ops.stack([fx, zeros], dim=-1), ops.stack([zeros, fy], dim=-1)], dim=-2)
+
+
+# --- FAST SHAPE CHECK HELPERS ---
+
+
+def _fast_check_shape_star2(x: Tensor, raises: bool = True) -> bool:
+    # Check x.shape[-1] == 2
+    if x.shape[-1] != 2:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 2]. Got {x.shape}")
+        return False
+    return True
+
+
+def _fast_check_shape_star4(x: Tensor, raises: bool = True) -> bool:
+    if x.shape[-1] != 4:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 4]. Got {x.shape}")
+        return False
+    return True
+
+
+def _fast_check_shape_star8(x: Tensor, raises: bool = True) -> bool:
+    if x.shape[-1] != 8:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 8]. Got {x.shape}")
+        return False
+    return True
