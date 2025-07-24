@@ -58,7 +58,20 @@ class ProbabilityGenerator(RandomGeneratorBase):
 
     def forward(self, batch_shape: Tuple[int, ...], same_on_batch: bool = False) -> Dict[str, Tensor]:
         batch_size = batch_shape[0]
-        probs_mask: Tensor = _adapted_sampling((batch_size,), self.sampler, same_on_batch).bool()
+        # Fast path for common case: (batch_size,) and self.sampler is Bernoulli with .probs=self.p
+        # We bypass .sample() and use torch.rand for maximum speed if possible
+        # Otherwise fallback to general sampler
+        if (
+            isinstance(self.sampler, torch.distributions.Bernoulli)
+            and getattr(self.sampler, "probs", None) is not None
+            and not same_on_batch
+        ):
+            # Avoid overhead of .sample() and .bool() by using torch.rand directly
+            probs_mask = (
+                torch.rand(batch_size, dtype=self.sampler.probs.dtype, device=self.sampler.probs.device) < self.p
+            )
+        else:
+            probs_mask: Tensor = _adapted_sampling((batch_size,), self.sampler, same_on_batch).bool()
         return {"probs": probs_mask}
 
 
