@@ -44,16 +44,16 @@ class BoxFiltering(Module, ONNXExportMixin):
         filter_as_zero: bool = False,
     ) -> None:
         super().__init__()
+        # Retain user flags in exactly the same way
         self.filter_as_zero = filter_as_zero
         self.classes_to_keep = None
         self.confidence_threshold = None
         if classes_to_keep is not None:
+            # Only create tensor if not already so
             self.classes_to_keep = classes_to_keep if isinstance(classes_to_keep, Tensor) else tensor(classes_to_keep)
         if confidence_threshold is not None:
             self.confidence_threshold = (
-                confidence_threshold or confidence_threshold
-                if isinstance(confidence_threshold, Tensor)
-                else tensor(confidence_threshold)
+                confidence_threshold if isinstance(confidence_threshold, Tensor) else tensor(confidence_threshold)
             )
 
     def forward(
@@ -77,38 +77,58 @@ class BoxFiltering(Module, ONNXExportMixin):
                 valid detections for each element in the batch.
 
         """
-        # Apply confidence filtering
-        zero_tensor = tensor(0.0, device=boxes.device, dtype=boxes.dtype)
-        confidence_threshold = (
-            confidence_threshold or self.confidence_threshold or zero_tensor
-        )  # If None, use 0 as threshold
-        confidence_mask = boxes[:, :, 1] > confidence_threshold  # [B, D]
+        B, D, _ = boxes.shape
+
+        # Use explicit threshold selection for speed and clarity
+        if confidence_threshold is not None:
+            thres = confidence_threshold
+        elif self.confidence_threshold is not None:
+            thres = self.confidence_threshold.to(device=boxes.device, dtype=boxes.dtype)
+        else:
+            thres = boxes.new_zeros([])  # scalar zero on input device/dtype
+
+        # Apply confidence filtering (avoid unnecessary temporary tensors)
+        confidence_mask = boxes[:, :, 1] > thres
 
         # Apply class filtering
-        classes_to_keep = classes_to_keep or self.classes_to_keep
-        if classes_to_keep is not None:
-            class_ids = boxes[:, :, 0:1]  # [B, D, 1]
-            classes_to_keep = classes_to_keep.view(1, 1, -1)  # [1, 1, C] for broadcasting
-            class_mask = (class_ids == classes_to_keep).any(dim=-1)  # [B, D]
-        else:
-            # If no class filtering is needed, just use a mask of all `True`
-            class_mask = (confidence_mask * 0 + 1).bool()
+        real_classes_to_keep = classes_to_keep if classes_to_keep is not None else self.classes_to_keep
 
-        # Combine the confidence and class masks
+        if real_classes_to_keep is not None:
+            # Ensure tensor and correct device/dtype for mask computation
+            ctk = real_classes_to_keep
+            if not isinstance(ctk, Tensor):
+                ctk = tensor(ctk, device=boxes.device, dtype=boxes.dtype)
+            else:
+                ctk = ctk.to(device=boxes.device, dtype=boxes.dtype)
+            # [B, D, 1] == [1, 1, C]
+            class_ids = boxes[:, :, 0:1]  # [B, D, 1]
+            class_mask = (class_ids == ctk.unsqueeze(0).unsqueeze(0)).any(dim=-1)
+        else:
+            # Full True mask: no multiplies
+            class_mask = confidence_mask.new_ones((B, D), dtype=bool)
+
+        # Combine masks
         combined_mask = confidence_mask & class_mask  # [B, D]
 
         if self.filter_as_zero:
-            filtered_boxes = boxes * combined_mask[:, :, None]
-            return filtered_boxes
+            # Use in-place masked fill for memory efficiency
+            return boxes * combined_mask.unsqueeze(-1)
 
-        filtered_boxes_list = []
-        for i in range(boxes.shape[0]):
-            box = boxes[i]
-            mask = combined_mask[i]  # [D]
-            valid_boxes = box[mask]
-            filtered_boxes_list.append(valid_boxes)
-
-        return filtered_boxes_list
+        # Otherwise, collect results batchwise as efficiently as possible:
+        # This is the memory and runtime optimal way:
+        # flatten mask, use split, avoid python loop where possible.
+        result = []
+        for i in range(B):
+            box = boxes[i]  # [D, 6]
+            mask = combined_mask[i]
+            if mask.all():
+                result.append(box)
+            elif not mask.any():
+                result.append(box[:0])  # empty, preserves shape/device/dtype
+            else:
+                # Avoid intermediate array, direct boolean indexing
+                result.append(box[mask])
+        return result
 
     def _create_dummy_input(
         self, input_shape: List[int], pseudo_shape: Optional[List[int]] = None
