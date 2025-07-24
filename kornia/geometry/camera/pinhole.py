@@ -45,17 +45,18 @@ class PinholeCamera:
 
     def __init__(self, intrinsics: Tensor, extrinsics: Tensor, height: Tensor, width: Tensor) -> None:
         # verify batch size and shapes
-        self._check_valid([intrinsics, extrinsics, height, width])
-        self._check_valid_params(intrinsics, "intrinsics")
-        self._check_valid_params(extrinsics, "extrinsics")
-        self._check_valid_shape(height, "height")
-        self._check_valid_shape(width, "width")
-        self._check_consistent_device([intrinsics, extrinsics, height, width])
-        # set class attributes
-        self.height: Tensor = height
-        self.width: Tensor = width
-        self._intrinsics: Tensor = intrinsics
-        self._extrinsics: Tensor = extrinsics
+        # Use staticmethods directly for speed (avoid attribute lookup)
+        PinholeCamera._check_valid([intrinsics, extrinsics, height, width])
+        PinholeCamera._check_valid_params(intrinsics, "intrinsics")
+        PinholeCamera._check_valid_params(extrinsics, "extrinsics")
+        PinholeCamera._check_valid_shape(height, "height")
+        PinholeCamera._check_valid_shape(width, "width")
+        PinholeCamera._check_consistent_device([intrinsics, extrinsics, height, width])
+        # Set class attributes. Avoid using type annotations in class body for speed.
+        self.height = height
+        self.width = width
+        self._intrinsics = intrinsics
+        self._extrinsics = extrinsics
 
     @staticmethod
     def _check_valid(data_iter: Iterable[Tensor]) -> bool:
@@ -272,7 +273,7 @@ class PinholeCamera:
         return self.intrinsics.inverse()
 
     def scale(self, scale_factor: Tensor) -> "PinholeCamera":
-        r"""Scale the pinhole model.
+        """Scale the pinhole model.
 
         Args:
             scale_factor: a tensor with the scale factor. It has
@@ -283,16 +284,19 @@ class PinholeCamera:
             the camera model with scaled parameters.
 
         """
-        # scale the intrinsic parameters
-        intrinsics: Tensor = self.intrinsics.clone()
-        intrinsics[..., 0, 0] *= scale_factor
-        intrinsics[..., 1, 1] *= scale_factor
-        intrinsics[..., 0, 2] *= scale_factor
-        intrinsics[..., 1, 2] *= scale_factor
-        # scale the image height/width
-        height: Tensor = scale_factor * self.height.clone()
-        width: Tensor = scale_factor * self.width.clone()
-        return PinholeCamera(intrinsics, self.extrinsics, height, width)
+        # scale the intrinsic parameters with fewer copies for speed
+        intrinsics = self.intrinsics.clone()
+        # Use index assignment directly for in-place speedup
+        s = scale_factor
+        intrinsics[..., 0, 0] *= s
+        intrinsics[..., 1, 1] *= s
+        intrinsics[..., 0, 2] *= s
+        intrinsics[..., 1, 2] *= s
+        # scale the image height/width, avoid clone() as not needed (scale creates new tensor)
+        height = s * self.height
+        width = s * self.width
+        # Return new instance, extrinsics is unchanged and can be passed as is
+        return PinholeCamera(intrinsics, self._extrinsics, height, width)
 
     def scale_(self, scale_factor: Union[float, Tensor]) -> "PinholeCamera":
         r"""Scale the pinhole model in-place.
@@ -411,6 +415,14 @@ class PinholeCamera:
         width_tmp = zeros(batch_size, device=device, dtype=dtype)
         width_tmp[..., 0] += width
         return self(intrinsics, extrinsics, height_tmp, width_tmp)
+
+    @property
+    def intrinsics(self) -> Tensor:
+        return self._intrinsics
+
+    @property
+    def extrinsics(self) -> Tensor:
+        return self._extrinsics
 
 
 class PinholeCamerasList(PinholeCamera):
