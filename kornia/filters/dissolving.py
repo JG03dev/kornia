@@ -30,8 +30,8 @@ class _DissolvingWraper_HF:
         self.tokenizer = self.model.tokenizer
         self.model.scheduler.set_timesteps(self.num_ddim_steps)
         self.total_steps = len(self.model.scheduler.timesteps)  # Total number of sampling steps.
-        self.prompt: str
-        self.context: Tensor
+        self.prompt: str = ""
+        self.context: Tensor = None
 
     def predict_start_from_noise(self, noise_pred: Tensor, timestep: int, latent: Tensor) -> Tensor:
         return (
@@ -41,6 +41,9 @@ class _DissolvingWraper_HF:
 
     @torch.no_grad()
     def init_prompt(self, prompt: str) -> None:
+        # Cache context only if it's a new prompt
+        if getattr(self, "prompt", None) == prompt and self.context is not None:
+            return
         uncond_input = self.model.tokenizer(
             [""], padding="max_length", max_length=self.model.tokenizer.model_max_length, return_tensors="pt"
         )
@@ -53,34 +56,33 @@ class _DissolvingWraper_HF:
             return_tensors="pt",
         )
         text_embeddings = self.model.text_encoder(text_input.input_ids.to(self.model.device))[0]
-        self.context = torch.cat([uncond_embeddings, text_embeddings])
+        self.context = torch.cat([uncond_embeddings, text_embeddings], dim=0)
         self.prompt = prompt
 
     # Encode the image to latent using the VAE.
     @torch.no_grad()
     def encode_tensor_to_latent(self, image: Tensor) -> Tensor:
-        with torch.no_grad():
-            image = (image / 0.5 - 1).to(self.model.device)
-            latents = self.model.vae.encode(image)["latent_dist"].sample()
-            latents = latents * 0.18215
-        return latents
+        image = (image / 0.5 - 1).to(self.model.device)
+        latents = self.model.vae.encode(image)["latent_dist"].sample()
+        return latents.mul_(0.18215)  # in-place multiplication to save memory
 
     @torch.no_grad()
     def decode_tensor_to_latent(self, latents: Tensor) -> Tensor:
-        latents = 1 / 0.18215 * latents.detach()
-        image = self.model.vae.decode(latents)["sample"]
-        image = (image / 2 + 0.5).clamp(0, 1)
+        latents = latents.detach()
+        image = self.model.vae.decode(latents * (1 / 0.18215))["sample"]
+        image = image.div_(2).add_(0.5).clamp_(0, 1)  # in-place ops for speed and memory
         return image
 
     @torch.no_grad()
     def one_step_dissolve(self, latent: Tensor, i: int) -> Tensor:
-        _, cond_embeddings = self.context.chunk(2)
-        latent = latent.clone().detach()
-        # NOTE: This implementation use a reversed timesteps but can reach to
-        # a stable dissolving effect.
+        # Use torch.chunk with dim=0 for efficiency
+        _, cond_embeddings = self.context.chunk(2, dim=0)
+        latent = latent.detach()
+        # NOTE: This implementation uses reversed timesteps for a stable dissolving effect.
         t = self.num_ddim_steps - self.model.scheduler.timesteps[i]
         latent = self.model.scheduler.scale_model_input(latent, t)
-        cond_embeddings = cond_embeddings.repeat(latent.size(0), 1, 1)
+        cond_embeddings = cond_embeddings.expand(latent.size(0), -1, -1)
+        # No need to clone latent, it's already detached and only used for read
         noise_pred = self.model.unet(latent, t, cond_embeddings).sample
         pred_x0 = self.predict_start_from_noise(noise_pred, t, latent)
         return pred_x0
