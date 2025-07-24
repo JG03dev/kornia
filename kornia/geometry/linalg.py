@@ -37,11 +37,11 @@ __all__ = [
 
 
 def compose_transformations(trans_01: Tensor, trans_12: Tensor) -> Tensor:
-    r"""Compose two homogeneous transformations.
+    """Compose two homogeneous transformations.
 
     .. math::
         T_0^{2} = \begin{bmatrix} R_0^1 R_1^{2} & R_0^{1} t_1^{2} + t_0^{1} \\
-        \mathbf{0} & 1\end{bmatrix}
+        \\mathbf{0} & 1\\end{bmatrix}
 
     Args:
         trans_01: tensor with the homogeneous transformation from
@@ -60,33 +60,45 @@ def compose_transformations(trans_01: Tensor, trans_12: Tensor) -> Tensor:
         >>> trans_02 = compose_transformations(trans_01, trans_12)  # 4x4
 
     """
+    # Only check tensor type once per argument
     KORNIA_CHECK_IS_TENSOR(trans_01)
     KORNIA_CHECK_IS_TENSOR(trans_12)
 
-    if not ((trans_01.dim() in (2, 3)) and (trans_01.shape[-2:] == (4, 4))):
-        raise ValueError(f"Input trans_01 must be a of the shape Nx4x4 or 4x4. Got {trans_01.shape}")
+    # Use faster shape validation using helper with minimal attribute lookups
+    _check_transform_shape(trans_01, "trans_01")
+    _check_transform_shape(trans_12, "trans_12")
 
-    if not ((trans_12.dim() in (2, 3)) and (trans_12.shape[-2:] == (4, 4))):
-        raise ValueError(f"Input trans_12 must be a of the shape Nx4x4 or 4x4. Got {trans_12.shape}")
-
-    if not trans_01.dim() == trans_12.dim():
+    if trans_01.dim() != trans_12.dim():
         raise ValueError(f"Input number of dims must match. Got {trans_01.dim()} and {trans_12.dim()}")
 
-    # unpack input data
-    rmat_01: Tensor = trans_01[..., :3, :3]  # Nx3x3
-    rmat_12: Tensor = trans_12[..., :3, :3]  # Nx3x3
-    tvec_01: Tensor = trans_01[..., :3, -1:]  # Nx3x1
-    tvec_12: Tensor = trans_12[..., :3, -1:]  # Nx3x1
+    # --- Implementation optimized for minimal tensor ops ---
 
-    # compute the actual transforms composition
-    rmat_02: Tensor = torch.matmul(rmat_01, rmat_12)
-    tvec_02: Tensor = torch.matmul(rmat_01, tvec_12) + tvec_01
+    # Avoid extra copies by assigning directly, not using '+=' where not necessary.
+    rmat_01 = trans_01[..., :3, :3]  # (N?,3,3)
+    rmat_12 = trans_12[..., :3, :3]
+    tvec_01 = trans_01[..., :3, 3:]  # (N?,3,1)
+    tvec_12 = trans_12[..., :3, 3:]
 
-    # pack output tensor
-    trans_02: Tensor = zeros_like(trans_01)
-    trans_02[..., :3, 0:3] += rmat_02
-    trans_02[..., :3, -1:] += tvec_02
-    trans_02[..., -1, -1:] += 1.0
+    # Compute R_02 and t_02
+    rmat_02 = torch.matmul(rmat_01, rmat_12)
+    tvec_02 = torch.matmul(rmat_01, tvec_12)
+    tvec_02 = tvec_02.add_(tvec_01)  # Inplace add to reduce alloc
+
+    # Prepare output transformation
+    # Instead of zeros_like + index add, do torch.eye for scalar/batch, then assign rmat/tvec. It saves add overhead.
+    shape = trans_01.shape
+    if len(shape) == 2:  # (4,4)
+        trans_02 = torch.eye(4, dtype=trans_01.dtype, device=trans_01.device)
+        trans_02[:3, :3] = rmat_02
+        trans_02[:3, 3:] = tvec_02
+        # Last row is already [0,0,0,1]
+    else:  # (N,4,4)
+        N = shape[0]
+        trans_02 = torch.zeros((N, 4, 4), dtype=trans_01.dtype, device=trans_01.device)
+        trans_02[..., :3, :3] = rmat_02
+        trans_02[..., :3, 3:] = tvec_02
+        trans_02[..., 3, 3] = 1.0
+
     return trans_02
 
 
@@ -283,6 +295,20 @@ def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float =
     KORNIA_CHECK_SHAPE(y, ["*", "N"])
 
     return (x - y + eps).pow(2).sum(-1, keepdim).sqrt()
+
+
+def _check_transform_shape(trans: Tensor, name: str) -> None:
+    # Fast inlined checks to minimize overhead
+    shape = trans.shape
+    dim = trans.dim()
+    if dim == 2:
+        if shape[-2] != 4 or shape[-1] != 4:
+            raise ValueError(f"Input {name} must be of the shape Nx4x4 or 4x4. Got {shape}")
+    elif dim == 3:
+        if shape[-2] != 4 or shape[-1] != 4:
+            raise ValueError(f"Input {name} must be of the shape Nx4x4 or 4x4. Got {shape}")
+    else:
+        raise ValueError(f"Input {name} must be of the shape Nx4x4 or 4x4. Got {shape}")
 
 
 # aliases
