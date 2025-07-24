@@ -44,13 +44,13 @@ class PinholeCamera:
     """
 
     def __init__(self, intrinsics: Tensor, extrinsics: Tensor, height: Tensor, width: Tensor) -> None:
-        # verify batch size and shapes
-        self._check_valid([intrinsics, extrinsics, height, width])
+        # verify batch size and shapes efficiently
+        self._check_valid((intrinsics, extrinsics, height, width))
         self._check_valid_params(intrinsics, "intrinsics")
         self._check_valid_params(extrinsics, "extrinsics")
         self._check_valid_shape(height, "height")
         self._check_valid_shape(width, "width")
-        self._check_consistent_device([intrinsics, extrinsics, height, width])
+        self._check_consistent_device((intrinsics, extrinsics, height, width))
         # set class attributes
         self.height: Tensor = height
         self.width: Tensor = width
@@ -59,8 +59,11 @@ class PinholeCamera:
 
     @staticmethod
     def _check_valid(data_iter: Iterable[Tensor]) -> bool:
-        if not all(data.shape[0] for data in data_iter):
-            raise ValueError("Arguments shapes must match")
+        # Fast batch size check: checks that batch size (shape[0]) is nonzero for all inputs
+        for d in data_iter:
+            # Avoids repeated attribute lookups by direct loop
+            if d.shape[0] == 0:
+                raise ValueError("Arguments shapes must match and not be empty")
         return True
 
     @staticmethod
