@@ -28,7 +28,7 @@ from .kernels import _unpack_2d_ks, get_box_kernel1d, get_box_kernel2d
 def box_blur(
     input: Tensor, kernel_size: tuple[int, int] | int, border_type: str = "reflect", separable: bool = False
 ) -> Tensor:
-    r"""Blur an image using the box filter.
+    """Blur an image using the box filter.
 
     .. image:: _static/img/box_blur.png
 
@@ -37,11 +37,11 @@ def box_blur(
     .. math::
         K = \frac{1}{\text{kernel_size}_x * \text{kernel_size}_y}
         \begin{bmatrix}
-            1 & 1 & 1 & \cdots & 1 & 1 \\
-            1 & 1 & 1 & \cdots & 1 & 1 \\
-            \vdots & \vdots & \vdots & \ddots & \vdots & \vdots \\
-            1 & 1 & 1 & \cdots & 1 & 1 \\
-        \end{bmatrix}
+            1 & 1 & 1 & \\cdots & 1 & 1 \\
+            1 & 1 & 1 & \\cdots & 1 & 1 \\
+            \vdots & \vdots & \vdots & \\ddots & \vdots & \vdots \\
+            1 & 1 & 1 & \\cdots & 1 & 1 \\
+        \\end{bmatrix}
 
     Args:
         input: the image to blur with shape :math:`(B,C,H,W)`.
@@ -64,7 +64,6 @@ def box_blur(
 
     """
     KORNIA_CHECK_IS_TENSOR(input)
-
     if separable:
         ky, kx = _unpack_2d_ks(kernel_size)
         kernel_y = get_box_kernel1d(ky, device=input.device, dtype=input.dtype)
@@ -73,8 +72,24 @@ def box_blur(
     else:
         kernel = get_box_kernel2d(kernel_size, device=input.device, dtype=input.dtype)
         out = filter2d(input, kernel, border_type)
-
     return out
+
+
+# Inlined and specialized box_blur for this module -- avoid import overhead, always use 2d (non-separable) version,
+# and avoid creating kernel repeatedly.
+def _fast_box_blur(
+    input: Tensor, kernel_size: tuple[int, int], border_type: str = "reflect", _kernels_cache={}
+) -> Tensor:
+    # Applies a box filter with given kernel_size, caching the kernel for faster repeated calls.
+    KORNIA_CHECK_IS_TENSOR(input)
+    dev = input.device
+    dtype = input.dtype
+    key = (kernel_size, dev, dtype)
+    kernel = _kernels_cache.get(key)
+    if kernel is None:
+        kernel = get_box_kernel2d(kernel_size, device=dev, dtype=dtype)
+        _kernels_cache[key] = kernel
+    return filter2d(input, kernel, border_type)
 
 
 class BoxBlur(Module):
