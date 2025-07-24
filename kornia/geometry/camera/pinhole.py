@@ -43,14 +43,17 @@ class PinholeCamera:
 
     """
 
-    def __init__(self, intrinsics: Tensor, extrinsics: Tensor, height: Tensor, width: Tensor) -> None:
-        # verify batch size and shapes
-        self._check_valid([intrinsics, extrinsics, height, width])
-        self._check_valid_params(intrinsics, "intrinsics")
-        self._check_valid_params(extrinsics, "extrinsics")
-        self._check_valid_shape(height, "height")
-        self._check_valid_shape(width, "width")
-        self._check_consistent_device([intrinsics, extrinsics, height, width])
+    def __init__(
+        self, intrinsics: Tensor, extrinsics: Tensor, height: Tensor, width: Tensor, _skip_checks: bool = False
+    ) -> None:
+        # skip checks only for internal use (trusted sources like clone)
+        if not _skip_checks:
+            self._check_valid([intrinsics, extrinsics, height, width])
+            self._check_valid_params(intrinsics, "intrinsics")
+            self._check_valid_params(extrinsics, "extrinsics")
+            self._check_valid_shape(height, "height")
+            self._check_valid_shape(width, "width")
+            self._check_consistent_device([intrinsics, extrinsics, height, width])
         # set class attributes
         self.height: Tensor = height
         self.width: Tensor = width
@@ -255,12 +258,14 @@ class PinholeCamera:
         return self.extrinsics[..., :3, -1:]
 
     def clone(self) -> "PinholeCamera":
-        r"""Return a deep copy of the current object instance."""
-        height: Tensor = self.height.clone()
-        width: Tensor = self.width.clone()
-        intrinsics: Tensor = self.intrinsics.clone()
-        extrinsics: Tensor = self.extrinsics.clone()
-        return PinholeCamera(intrinsics, extrinsics, height, width)
+        """Return a deep copy of the current object instance."""
+        # Use fast local access
+        h = self.height
+        w = self.width
+        i = self.intrinsics
+        e = self.extrinsics
+        # Directly call .clone() in a single return, avoid temporaries
+        return PinholeCamera(i.clone(), e.clone(), h.clone(), w.clone(), _skip_checks=True)
 
     def intrinsics_inverse(self) -> Tensor:
         r"""Return the inverse of the 4x4 instrisics matrix.
