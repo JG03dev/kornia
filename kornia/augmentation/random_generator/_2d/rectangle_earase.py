@@ -97,56 +97,59 @@ class RectangleEraseGenerator(RandomGeneratorBase):
 
         _common_param_check(batch_size, same_on_batch)
         _device, _dtype = _extract_device_dtype([self.ratio, self.scale])
-        images_area = height * width
-        target_areas = (
-            _adapted_rsampling((batch_size,), self.scale_sampler, same_on_batch).to(device=_device, dtype=_dtype)
-            * images_area
-        )
 
-        if self.ratio[0] < 1.0 and self.ratio[1] > 1.0:
-            aspect_ratios1 = _adapted_rsampling((batch_size,), self.ratio_sampler1, same_on_batch)
-            aspect_ratios2 = _adapted_rsampling((batch_size,), self.ratio_sampler2, same_on_batch)
+        # Preallocate commonly needed tensors as constants on correct device/dtype.
+        one = torch.tensor(1.0, device=_device, dtype=_dtype)
+        h_t = torch.tensor(height, device=_device, dtype=_dtype)
+        w_t = torch.tensor(width, device=_device, dtype=_dtype)
+        bsz = batch_size
+
+        images_area = height * width
+
+        # Generate all the required random tensors in batch for better scheduling.
+        # These are done in advance to maximize possible parallelism.
+        target_areas = _adapted_rsampling((bsz,), self.scale_sampler, same_on_batch).to(device=_device, dtype=_dtype)
+        target_areas.mul_(images_area)
+
+        # Short-circuit the most likely ratio branch (avoid Python list/tuple float ops repeatedly).
+        r0, r1 = float(self.ratio[0]), float(self.ratio[1])
+        if r0 < 1.0 < r1:
+            aspect_ratios1 = _adapted_rsampling((bsz,), self.ratio_sampler1, same_on_batch)
+            aspect_ratios2 = _adapted_rsampling((bsz,), self.ratio_sampler2, same_on_batch)
+            # Efficient batch random choice for same_on_batch=False.
             if same_on_batch:
-                rand_idxs = (
-                    torch.round(_adapted_rsampling((1,), self.index_sampler, same_on_batch)).repeat(batch_size).bool()
-                )
+                # Only generate one random index then broadcast
+                rand_idxs = torch.round(_adapted_rsampling((1,), self.index_sampler, True)).bool().expand(bsz)
             else:
-                rand_idxs = torch.round(_adapted_rsampling((batch_size,), self.index_sampler, same_on_batch)).bool()
+                rand_idxs = torch.round(_adapted_rsampling((bsz,), self.index_sampler, False)).bool()
             aspect_ratios = where(rand_idxs, aspect_ratios1, aspect_ratios2)
         else:
-            aspect_ratios = _adapted_rsampling((batch_size,), self.ratio_sampler, same_on_batch)
+            aspect_ratios = _adapted_rsampling((bsz,), self.ratio_sampler, same_on_batch)
 
         aspect_ratios = aspect_ratios.to(device=_device, dtype=_dtype)
 
-        # based on target areas and aspect ratios, rectangle params are computed
-        heights = torch.min(
-            torch.max(
-                torch.round((target_areas * aspect_ratios) ** (1 / 2)), tensor(1.0, device=_device, dtype=_dtype)
-            ),
-            tensor(height, device=_device, dtype=_dtype),
-        )
+        # Rectangle calculation: use fused sqrt for both shapes, clamp/min/max only at end for speed.
+        sqrt_val = torch.sqrt(target_areas * aspect_ratios)
+        heights = sqrt_val.round().clamp(min=1.0, max=height)
+        widths = torch.sqrt(target_areas / aspect_ratios).round().clamp(min=1.0, max=width)
 
-        widths = torch.min(
-            torch.max(
-                torch.round((target_areas / aspect_ratios) ** (1 / 2)), tensor(1.0, device=_device, dtype=_dtype)
-            ),
-            tensor(width, device=_device, dtype=_dtype),
-        )
+        # Efficient random sampling for positions
+        xs_ratio = _adapted_rsampling((bsz,), self.uniform_sampler, same_on_batch).to(device=_device, dtype=_dtype)
+        ys_ratio = _adapted_rsampling((bsz,), self.uniform_sampler, same_on_batch).to(device=_device, dtype=_dtype)
 
-        xs_ratio = _adapted_rsampling((batch_size,), self.uniform_sampler, same_on_batch).to(
-            device=_device, dtype=_dtype
-        )
-        ys_ratio = _adapted_rsampling((batch_size,), self.uniform_sampler, same_on_batch).to(
-            device=_device, dtype=_dtype
-        )
+        # Direct tensor math, reusing previous variables, avoids Python arithmetic in the hot path.
+        # Instead of `width - widths + 1`, can use broadcasting, and because all tensors are same device/dtype.
+        # This makes these operations faster than possibly repeated item() calls.
+        xs = xs_ratio * ((w_t - widths) + 1)
+        ys = ys_ratio * ((h_t - heights) + 1)
 
-        xs = xs_ratio * (width - widths + 1)
-        ys = ys_ratio * (height - heights + 1)
+        # Pack the outputs, using preallocated tensors to avoid slow `[self.value] * batch_size` in a Python list.
+        vals = torch.full((bsz,), self.value, dtype=_dtype, device=_device)
 
         return {
             "widths": widths.floor(),
             "heights": heights.floor(),
             "xs": xs.floor(),
             "ys": ys.floor(),
-            "values": tensor([self.value] * batch_size, device=_device, dtype=_dtype),
+            "values": vals,
         }
