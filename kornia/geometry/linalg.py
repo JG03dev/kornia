@@ -264,7 +264,9 @@ def batched_dot_product(x: Tensor, y: Tensor, keepdim: bool = False) -> Tensor:
 
 def batched_squared_norm(x: Tensor, keepdim: bool = False) -> Tensor:
     """Return the squared norm of a vector."""
-    return batched_dot_product(x, x, keepdim)
+    # Inline product for higher efficiency; avoids nested Python call
+    _check_shape_N(x)
+    return (x * x).sum(-1, keepdim=keepdim)
 
 
 def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float = 1e-6) -> Tensor:
@@ -283,6 +285,13 @@ def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float =
     KORNIA_CHECK_SHAPE(y, ["*", "N"])
 
     return (x - y + eps).pow(2).sum(-1, keepdim).sqrt()
+
+
+def _check_shape_N(x: Tensor) -> None:
+    # Fast inline KORNIA_CHECK_SHAPE for ["*", "N"], avoids allocations in tight loop
+    shape = x.shape
+    if len(shape) < 1:
+        raise TypeError(f"{x} shape must be [*, N]. Got {x.shape}")
 
 
 # aliases
