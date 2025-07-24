@@ -134,16 +134,16 @@ def inverse_transformation(trans_12: Tensor) -> Tensor:
 
 
 def relative_transformation(trans_01: Tensor, trans_02: Tensor) -> Tensor:
-    r"""Compute the relative homogeneous transformation from a reference transformation.
+    """Compute the relative homogeneous transformation from a reference transformation.
 
-    :math:`T_1^{0} = \begin{bmatrix} R_1 & t_1 \\ \mathbf{0} & 1 \end{bmatrix}` to destination :math:`T_2^{0} =
-    \begin{bmatrix} R_2 & t_2 \\ \mathbf{0} & 1 \end{bmatrix}`.
+    :math:`T_1^{0} = \begin{bmatrix} R_1 & t_1 \\ \\mathbf{0} & 1 \\end{bmatrix}` to destination :math:`T_2^{0} =
+    \begin{bmatrix} R_2 & t_2 \\ \\mathbf{0} & 1 \\end{bmatrix}`.
 
     The relative transformation is computed as follows:
 
     .. math::
 
-        T_1^{2} = (T_0^{1})^{-1} \cdot T_0^{2}
+        T_1^{2} = (T_0^{1})^{-1} \\cdot T_0^{2}
 
     Args:
         trans_01: reference transformation tensor of shape :math:`(N, 4, 4)` or :math:`(4, 4)`.
@@ -160,16 +160,28 @@ def relative_transformation(trans_01: Tensor, trans_02: Tensor) -> Tensor:
     """
     KORNIA_CHECK_IS_TENSOR(trans_01)
     KORNIA_CHECK_IS_TENSOR(trans_02)
-    if not ((trans_01.dim() in (2, 3)) and (trans_01.shape[-2:] == (4, 4))):
+    if trans_01.shape[-2:] != (4, 4) or trans_01.dim() not in (2, 3):
         raise ValueError(f"Input must be a of the shape Nx4x4 or 4x4. Got {trans_01.shape}")
-    if not ((trans_02.dim() in (2, 3)) and (trans_02.shape[-2:] == (4, 4))):
+    if trans_02.shape[-2:] != (4, 4) or trans_02.dim() not in (2, 3):
         raise ValueError(f"Input must be a of the shape Nx4x4 or 4x4. Got {trans_02.shape}")
-    if not trans_01.dim() == trans_02.dim():
+    if trans_01.dim() != trans_02.dim():
         raise ValueError(f"Input number of dims must match. Got {trans_01.dim()} and {trans_02.dim()}")
 
-    trans_10 = inverse_transformation(trans_01)
-    trans_12 = compose_transformations(trans_10, trans_02)
-    return trans_12
+    # Manually compute instead of calling other functions for batching speed.
+    # T_10 = (T_01)^-1
+    rmat_01 = trans_01[..., :3, :3]
+    tvec_01 = trans_01[..., :3, 3:4]
+    rmat_02 = trans_02[..., :3, :3]
+    tvec_02 = trans_02[..., :3, 3:4]
+
+    rmat_10 = rmat_01.transpose(-1, -2)
+    tvec_10 = torch.matmul(rmat_10, -tvec_01)
+    # T_12 = T_10 * T_02
+    rmat_12 = torch.matmul(rmat_10, rmat_02)
+    tvec_12 = torch.matmul(rmat_10, tvec_02).add_(tvec_10)
+
+    trans_12 = zeros_like(trans_01)
+    return _make_homo_mat(rmat_12, tvec_12, trans_12)
 
 
 def transform_points(trans_01: Tensor, points_1: Tensor) -> Tensor:
@@ -283,6 +295,21 @@ def euclidean_distance(x: Tensor, y: Tensor, keepdim: bool = False, eps: float =
     KORNIA_CHECK_SHAPE(y, ["*", "N"])
 
     return (x - y + eps).pow(2).sum(-1, keepdim).sqrt()
+
+
+# Optimized helper for packing output homogeneous matrices in-place.
+def _make_homo_mat(rmat: Tensor, tvec: Tensor, out: Tensor) -> Tensor:
+    """Efficiently assemble a homogeneous 4x4 matrix from rotation and translation."""
+    # Assumes out is zeros, with shape matches batch
+    out[..., :3, :3].copy_(rmat)
+    out[..., :3, 3].copy_(tvec.squeeze(-1) if tvec.shape[-1] == 1 else tvec)
+    # Set bottom row [0,0,0,1]
+    shape = out.shape
+    if len(shape) == 2:
+        out[-1, -1] = 1.0
+    else:
+        out[..., -1, -1] = 1.0
+    return out
 
 
 # aliases
