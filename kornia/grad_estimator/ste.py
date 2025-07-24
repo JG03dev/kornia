@@ -61,13 +61,23 @@ class STEFunction(Function):
 
     @staticmethod
     def backward(ctx: Any, grad_output: Tensor) -> Tuple[Tensor, Tensor, None]:  # type: ignore[override]
-        if ctx.grad_fn is None:
-            return grad_output.sum_to_size(ctx.in_shape), grad_output.sum_to_size(ctx.out_shape), None
-        return (
-            ctx.grad_fn(grad_output.sum_to_size(ctx.in_shape)),
-            ctx.grad_fn(grad_output.sum_to_size(ctx.out_shape)),
-            None,
-        )
+        grad_fn = ctx.grad_fn
+        in_shape = ctx.in_shape
+        out_shape = ctx.out_shape
+
+        # Optimize redundant calls and attribute lookups
+        if in_shape is out_shape:
+            grad_sum = grad_output.sum_to_size(in_shape)
+            if grad_fn is None:
+                return grad_sum, grad_sum, None
+            grad_val = grad_fn(grad_sum)
+            return grad_val, grad_val, None
+        else:
+            grad_in = grad_output.sum_to_size(in_shape)
+            grad_out = grad_output.sum_to_size(out_shape)
+            if grad_fn is None:
+                return grad_in, grad_out, None
+            return grad_fn(grad_in), grad_fn(grad_out), None
 
     # https://pytorch.org/docs/1.10.0/onnx.html#torch-autograd-functions
     # @staticmethod
