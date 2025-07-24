@@ -183,7 +183,7 @@ class ColorMap:
 
 
 def apply_colormap(input_tensor: Tensor, colormap: ColorMap) -> Tensor:
-    r"""Apply to a gray tensor a colormap.
+    """Apply to a gray tensor a colormap.
 
     .. image:: _static/img/apply_colormap.png
 
@@ -217,27 +217,42 @@ def apply_colormap(input_tensor: Tensor, colormap: ColorMap) -> Tensor:
                   [0.0000, 0.0000, 0.0000]]]])
 
     """
+    # Type and shape check
     KORNIA_CHECK(isinstance(input_tensor, Tensor), f"`input_tensor` must be a Tensor. Got: {type(input_tensor)}")
-    valid_types = [torch.half, torch.float, torch.double, torch.uint8, torch.int, torch.long, torch.short]
     KORNIA_CHECK(
-        input_tensor.dtype in valid_types, f"`input_tensor` must be a {valid_types}. Got: {input_tensor.dtype}"
+        input_tensor.dtype in _VALID_TYPES, f"`input_tensor` must be a {_VALID_TYPES}. Got: {input_tensor.dtype}"
     )
     KORNIA_CHECK(len(input_tensor.shape) in (3, 4), "Wrong input tensor dimension.")
-    if len(input_tensor.shape) == 3:
-        input_tensor = input_tensor.unsqueeze_(0)
-
+    if input_tensor.dim() == 3:
+        input_tensor = input_tensor.unsqueeze(0)  # (1, C, H, W)
     B, C, H, W = input_tensor.shape
-    input_tensor = input_tensor.reshape(B, C, -1)
-    max_value = 1.0 if input_tensor.max() <= 1.0 else 255.0
-    input_tensor = input_tensor.float().div_(max_value)
 
-    colors = colormap.colors.permute(1, 0)
+    # Flatten only spatial dims for efficiency, keep B and C for easy batch/apply
+    input_tensor = input_tensor.reshape(B, C, H * W)
+
+    # Determine if input needs normalization
+    # Use .amax instead of .max for slightly faster reduction
+    max_pixel = input_tensor.amax().item()
+    max_value = 1.0 if max_pixel <= 1.0 else 255.0
+
+    # Normalize/fuse .float(), .div_()
+    input_tensor = input_tensor.to(dtype=torch.float32).div_(max_value)
+
+    # Permute colormap for easy direct indexing and avoid expand/gather
+    colors = colormap.colors.permute(1, 0)  # (num_colors, channels_cmap)
     num_colors, channels_cmap = colors.shape
-    keys = torch.linspace(0.0, 1.0, num_colors - 1, device=input_tensor.device, dtype=input_tensor.dtype)
-    indices = torch.bucketize(input_tensor, keys).unsqueeze(-1).expand(-1, -1, -1, 3)
 
-    output = torch.gather(colors.expand(B, C, -1, -1), 2, indices)
-    # (B, C, H*W, channels_cmap) -> (B, C*channels_cmap, H, W)
+    # Vectorized mapping keys
+    keys = torch.linspace(0.0, 1.0, num_colors - 1, device=input_tensor.device, dtype=input_tensor.dtype)
+    # Use searchsorted for efficiency (bucketize is already pretty optimal, but stick with bucketize for consitency)
+    indices = torch.bucketize(input_tensor, keys)  # (B, C, H*W)
+
+    # Direct indexing: produce output shape (B, C, H*W, channels_cmap)
+    # No need to unsqueeze/expand, just use indexing
+    # Result: (B, C, H*W, channels_cmap)
+    output = colors[indices]  # broadcasting applies on indices' shape
+
+    # Rearranging dimensions for final output shape (B, C*channels_cmap, H, W)
     output = output.permute(0, 1, 3, 2).reshape(B, C * channels_cmap, H, W)
 
     return output
@@ -320,3 +335,6 @@ class AUTUMN(ColorMap):
         self, num_colors: int = 64, device: Optional[torch.device] = None, dtype: Optional[torch.dtype] = None
     ) -> None:
         super().__init__(base=ColorMapType.autumn, num_colors=num_colors, device=device, dtype=dtype)
+
+
+_VALID_TYPES = (torch.half, torch.float, torch.double, torch.uint8, torch.int, torch.long, torch.short)
