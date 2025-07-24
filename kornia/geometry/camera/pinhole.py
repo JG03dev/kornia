@@ -44,18 +44,19 @@ class PinholeCamera:
     """
 
     def __init__(self, intrinsics: Tensor, extrinsics: Tensor, height: Tensor, width: Tensor) -> None:
-        # verify batch size and shapes
-        self._check_valid([intrinsics, extrinsics, height, width])
+        # Pre-bundle the tensors to optimize method use
+        tensor_list = (intrinsics, extrinsics, height, width)
+        self._check_valid(tensor_list)
         self._check_valid_params(intrinsics, "intrinsics")
         self._check_valid_params(extrinsics, "extrinsics")
         self._check_valid_shape(height, "height")
         self._check_valid_shape(width, "width")
-        self._check_consistent_device([intrinsics, extrinsics, height, width])
+        self._check_consistent_device(tensor_list)
         # set class attributes
-        self.height: Tensor = height
-        self.width: Tensor = width
-        self._intrinsics: Tensor = intrinsics
-        self._extrinsics: Tensor = extrinsics
+        self.height = height
+        self.width = width
+        self._intrinsics = intrinsics
+        self._extrinsics = extrinsics
 
     @staticmethod
     def _check_valid(data_iter: Iterable[Tensor]) -> bool:
@@ -73,7 +74,8 @@ class PinholeCamera:
 
     @staticmethod
     def _check_valid_shape(data: Tensor, data_name: str) -> bool:
-        if not len(data.shape) == 1:
+        # Check if shape is 1D, else raise
+        if data.ndim != 1:
             raise ValueError(f"Argument {data_name} shape must be in the following shape B. Got {data.shape}")
         return True
 
