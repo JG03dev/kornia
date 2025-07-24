@@ -91,16 +91,16 @@ def compose_transformations(trans_01: Tensor, trans_12: Tensor) -> Tensor:
 
 
 def inverse_transformation(trans_12: Tensor) -> Tensor:
-    r"""Invert a 4x4 homogeneous transformation.
+    """Invert a 4x4 homogeneous transformation.
 
-     :math:`T_1^{2} = \begin{bmatrix} R_1 & t_1 \\ \mathbf{0} & 1 \end{bmatrix}`
+     :math:`T_1^{2} = \begin{bmatrix} R_1 & t_1 \\ \\mathbf{0} & 1 \\end{bmatrix}`
 
     The inverse transformation is computed as follows:
 
     .. math::
 
         T_2^{1} = (T_1^{2})^{-1} = \begin{bmatrix} R_1^T & -R_1^T t_1 \\
-        \mathbf{0} & 1\end{bmatrix}
+        \\mathbf{0} & 1\\end{bmatrix}
 
     Args:
         trans_12: transformation tensor of shape :math:`(N, 4, 4)` or :math:`(4, 4)`.
@@ -115,22 +115,32 @@ def inverse_transformation(trans_12: Tensor) -> Tensor:
     """
     KORNIA_CHECK_IS_TENSOR(trans_12)
 
-    if not ((trans_12.dim() in (2, 3)) and (trans_12.shape[-2:] == (4, 4))):
-        raise ValueError(f"Input size must be a Nx4x4 or 4x4. Got {trans_12.shape}")
-    # unpack input tensor
-    rmat_12 = trans_12[..., :3, 0:3]  # Nx3x3
-    tvec_12 = trans_12[..., :3, 3:4]  # Nx3x1
+    # Fast shape checks, fail before slicing
+    shape = trans_12.shape
+    if trans_12.dim() == 2:
+        if shape != (4, 4):
+            raise ValueError(f"Input size must be a Nx4x4 or 4x4. Got {shape}")
+        out = torch.eye(4, dtype=trans_12.dtype, device=trans_12.device)
+    elif trans_12.dim() == 3:
+        if shape[-2:] != (4, 4):
+            raise ValueError(f"Input size must be a Nx4x4 or 4x4. Got {shape}")
+        out = torch.eye(4, dtype=trans_12.dtype, device=trans_12.device).expand(shape[0], 4, 4).clone()
+    else:
+        raise ValueError(f"Input size must be a Nx4x4 or 4x4. Got {shape}")
 
-    # compute the actual inverse
-    rmat_21 = torch.transpose(rmat_12, -1, -2)
-    tvec_21 = torch.matmul(-rmat_21, tvec_12)
+    rmat_12 = trans_12[..., :3, :3]  # always Nx3x3 or 3x3, more efficient slice
+    tvec_12 = trans_12[..., :3, 3]  # Nx3 or 3, fetch as vector
 
-    # pack to output tensor
-    trans_21 = zeros_like(trans_12)
-    trans_21[..., :3, 0:3] += rmat_21
-    trans_21[..., :3, -1:] += tvec_21
-    trans_21[..., -1, -1:] += 1.0
-    return trans_21
+    rmat_21 = rmat_12.transpose(-1, -2)  # Nx3x3 or 3x3
+    if trans_12.dim() == 2:
+        tvec_21 = -rmat_21 @ tvec_12
+        out[:3, :3] = rmat_21
+        out[:3, 3] = tvec_21
+    else:  # batch mode
+        tvec_21 = -torch.matmul(rmat_21, tvec_12.unsqueeze(-1)).squeeze(-1)
+        out[:, :3, :3] = rmat_21
+        out[:, :3, 3] = tvec_21
+    return out
 
 
 def relative_transformation(trans_01: Tensor, trans_02: Tensor) -> Tensor:
