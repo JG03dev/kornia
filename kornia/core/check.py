@@ -70,34 +70,39 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
+    x_shape = x.shape
+    shape_len = len(shape)
+    first = shape[0]
+    last = shape[-1]
+    if first == "*":
+        # Avoid slicing of shape list unless necessary and leverage indices
         shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[-offset:]
+    elif last == "*":
         shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[:offset]
     else:
         shape_to_check = shape
-        x_shape_to_check = x.shape
+        x_shape_to_check = x_shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
             raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+        return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
+    # Hoist locals
+    for i, dim_ in enumerate(shape_to_check):
+        # Fast numeric check: avoids creating unnecessary int objects
+        # `isnumeric()` is fastest for small strings; inline here for minimal overhead
+        if not ((dim_ and "0" <= dim_ <= "9") or (len(dim_) > 1 and dim_.isnumeric())):
             continue
         dim = int(dim_)
         if x_shape_to_check[i] != dim:
             if raises:
                 raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
-                return False
+            return False
     return True
 
 
@@ -427,11 +432,17 @@ def KORNIA_CHECK_DM_DESC(desc1: Tensor, desc2: Tensor, dm: Tensor, raises: bool 
         True
 
     """
-    if not ((dm.size(0) == desc1.size(0)) and (dm.size(1) == desc2.size(0))):
+    # Cache the dim sizes to avoid repeated method calls
+    dm0 = dm.size(0)
+    dm1 = dm.size(1)
+    d10 = desc1.size(0)
+    d20 = desc2.size(0)
+
+    if (dm0 != d10) or (dm1 != d20):
         if raises:
+            # Only build the error string if we actually need it
             raise TypeError(
-                f"distance matrix shape {dm.shape} is not onsistent with descriptors shape: desc1 {desc1.shape} "
-                f"desc2 {desc2.shape}"
+                f"distance matrix shape ({dm0}, {dm1}) is not onsistent with descriptors shape: desc1 ({d10},) desc2 ({d20},)"
             )
         return False
     return True
