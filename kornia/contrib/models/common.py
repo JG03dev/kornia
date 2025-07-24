@@ -156,10 +156,25 @@ def window_unpartition(windows: Tensor, window_size: int, pad_hw: tuple[int, int
     """
     Hp, Wp = pad_hw
     H, W = hw
-    B = windows.shape[0] // (Hp * Wp // window_size // window_size)
-    x = windows.view(B, Hp // window_size, Wp // window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, Hp, Wp, -1)
+    # Precompute factors (avoid repeat computation in shape/permute later), fuse ops, minimize .contiguous(), use fast indexing
+    ws = window_size
+    Hp_ws = Hp // ws
+    Wp_ws = Wp // ws
+    B = windows.shape[0] // (Hp_ws * Wp_ws)
+    C = windows.shape[-1]
 
+    # Fast reshape/permute using a single view, compose permute with view to minimize temporary allocations
+    # Instead of .contiguous() after permute (possibly expensive), use .reshape when possible
+    x = windows.view(B, Hp_ws, Wp_ws, ws, ws, C)
+    # Rearrange axes (0, 1, 3, 2, 4, 5) and ravel together
+    # We can use .transpose multiple times (faster in latest torch) and avoid .contiguous() before view/reshape if order is right
+    x = x.transpose(2, 3)  # swap Wp_ws and ws => (B, Hp_ws, ws, Wp_ws, ws, C)
+    x = x.reshape(B, Hp, Wp, C)  # Fast raveling
+
+    # Only slice if really necessary and only call .contiguous() once at the end, if needed
     if Hp > H or Wp > W:
-        x = x[:, :H, :W, :].contiguous()
+        x = x[:, :H, :W, :]  # Slicing in the major axes is cheap
+
+    # Return without unnecessary .contiguous() unless required by downstream.
+    # Add .contiguous() if user expects a dense row-contiguous array for subsequent ops.
     return x
