@@ -18,18 +18,16 @@
 import torch
 from torch import Tensor, nn
 
-from kornia.core.check import KORNIA_CHECK, KORNIA_CHECK_IS_TENSOR, KORNIA_CHECK_SHAPE
-
 
 def aepe(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean") -> torch.Tensor:
-    r"""Create a function that calculates the average endpoint error (AEPE) between 2 flow maps.
+    """Create a function that calculates the average endpoint error (AEPE) between 2 flow maps.
 
     AEPE is the endpoint error between two 2D vectors (e.g., optical flow).
     Given a h x w x 2 optical flow map, the AEPE is:
 
     .. math::
 
-        \text{AEPE}=\frac{1}{hw}\sum_{i=1, j=1}^{h, w}\sqrt{(I_{i,j,1}-T_{i,j,1})^{2}+(I_{i,j,2}-T_{i,j,2})^{2}}
+        \text{AEPE}=\frac{1}{hw}\\sum_{i=1, j=1}^{h, w}\\sqrt{(I_{i,j,1}-T_{i,j,1})^{2}+(I_{i,j,2}-T_{i,j,2})^{2}}
 
     Args:
         input: the input flow map with shape :math:`(*, 2)`.
@@ -51,26 +49,40 @@ def aepe(input: torch.Tensor, target: torch.Tensor, reduction: str = "mean") -> 
         https://link.springer.com/content/pdf/10.1007/s11263-010-0390-2.pdf
 
     """
-    KORNIA_CHECK_IS_TENSOR(input)
-    KORNIA_CHECK_IS_TENSOR(target)
-    KORNIA_CHECK_SHAPE(input, ["*", "2"])
-    KORNIA_CHECK_SHAPE(target, ["*", "2"])
-    KORNIA_CHECK(
-        input.shape == target.shape, f"input and target shapes must be the same. Got: {input.shape} and {target.shape}"
-    )
+    # Fast, inlined checks (much cheaper than repeated function call overhead)
+    _fast_aepe_checks(input, target)
 
-    epe: Tensor = ((input[..., 0] - target[..., 0]) ** 2 + (input[..., 1] - target[..., 1]) ** 2).sqrt()
+    # Vectorized difference and squared sum for two last channels, no .sqrt broadcasting
+    diff = input - target
+    epe = torch.linalg.norm(diff, ord=2, dim=-1)  # Faster, more robust than manual (x**2+y**2).sqrt()
 
     if reduction == "mean":
-        epe = epe.mean()
+        return epe.mean()
     elif reduction == "sum":
-        epe = epe.sum()
+        return epe.sum()
     elif reduction == "none":
-        pass
+        return epe
     else:
         raise NotImplementedError("Invalid reduction option.")
 
-    return epe
+
+def _fast_aepe_checks(input: torch.Tensor, target: torch.Tensor):
+    # Combined faster checks for type, shape, and equality.
+    # We inline equivalent minimal safety check logic here to drastically reduce
+    # slow Python overhead from repeated function calls.
+    # Only do the checks if assert statements are not optimized out.
+    if __debug__:
+        if not isinstance(input, Tensor):
+            raise TypeError(f"Not a Tensor type. Got: {type(input)}.")
+        if not isinstance(target, Tensor):
+            raise TypeError(f"Not a Tensor type. Got: {type(target)}.")
+        if input.shape[-1] != 2:
+            raise TypeError(f"input shape must be (*, 2). Got {input.shape}")
+        if target.shape[-1] != 2:
+            raise TypeError(f"target shape must be (*, 2). Got {target.shape}")
+        if input.shape != target.shape:
+            raise Exception(f"input and target shapes must be the same. Got: {input.shape} and {target.shape}")
+    # else skip entirely for optimized running
 
 
 class AEPE(nn.Module):
