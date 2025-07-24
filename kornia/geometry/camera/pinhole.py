@@ -517,7 +517,7 @@ def pinhole_matrix(pinholes: Tensor, eps: float = 1e-6) -> Tensor:
 
 
 def inverse_pinhole_matrix(pinhole: Tensor, eps: float = 1e-6) -> Tensor:
-    r"""Return the inverted pinhole matrix from a pinhole model.
+    """Return the inverted pinhole matrix from a pinhole model.
 
     .. note::
         This method is going to be deprecated in version 0.2 in favour of
@@ -551,14 +551,24 @@ def inverse_pinhole_matrix(pinhole: Tensor, eps: float = 1e-6) -> Tensor:
         raise AssertionError(pinhole.shape)
     # unpack pinhole values
     fx, fy, cx, cy = torch.chunk(pinhole[..., :4], 4, dim=1)  # Nx1
-    # create output container
-    k = eye(4, device=pinhole.device, dtype=pinhole.dtype)
-    k = k.view(1, 4, 4).repeat(pinhole.shape[0], 1, 1)  # Nx4x4
-    # fill output with inverse values
-    k[..., 0, 0:1] = 1.0 / (fx + eps)
-    k[..., 1, 1:2] = 1.0 / (fy + eps)
-    k[..., 0, 2:3] = -1.0 * cx / (fx + eps)
-    k[..., 1, 2:3] = -1.0 * cy / (fy + eps)
+
+    # Precompute values for numerical stability and re-use; compute only once
+    fx_eps = fx + eps
+    fy_eps = fy + eps
+    inv_fx = fx_eps.reciprocal_() if fx_eps.is_floating_point() else 1.0 / fx_eps  # Nx1
+    inv_fy = fy_eps.reciprocal_() if fy_eps.is_floating_point() else 1.0 / fy_eps  # Nx1
+    ncx = -cx * inv_fx  # Nx1
+    ncy = -cy * inv_fy  # Nx1
+
+    # create output container (faster broadcasting)
+    base_eye = eye(4, device=pinhole.device, dtype=pinhole.dtype)
+    k = base_eye.unsqueeze(0).expand(pinhole.shape[0], 4, 4).clone()  # Nx4x4
+
+    # in-place fills
+    k[..., 0, 0] = inv_fx.squeeze(-1)
+    k[..., 1, 1] = inv_fy.squeeze(-1)
+    k[..., 0, 2] = ncx.squeeze(-1)
+    k[..., 1, 2] = ncy.squeeze(-1)
     return k
 
 
