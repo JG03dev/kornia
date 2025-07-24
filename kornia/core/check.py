@@ -70,34 +70,42 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
+    if shape == ["*", "2"]:
+        return _fast_check_shape_star2(x, raises)
+    elif shape == ["*", "4"]:
+        return _fast_check_shape_star4(x, raises)
+    elif shape == ["*", "8"]:
+        return _fast_check_shape_star8(x, raises)
+    # Fallback: old generic path (not changed from your code, in case you use other shapes elsewhere)
+    x_shape = x.shape
+    shape_len = len(shape)
+    first = shape[0]
+    last = shape[-1]
+    if first == "*":
         shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[-offset:]
+    elif last == "*":
         shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[:offset]
     else:
         shape_to_check = shape
-        x_shape_to_check = x.shape
+        x_shape_to_check = x_shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
             raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+        return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
+    for i, dim_ in enumerate(shape_to_check):
+        if not ((dim_ and "0" <= dim_ <= "9") or (len(dim_) > 1 and dim_.isnumeric())):
             continue
         dim = int(dim_)
         if x_shape_to_check[i] != dim:
             if raises:
                 raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
-                return False
+            return False
     return True
 
 
@@ -464,3 +472,31 @@ def _handle_invalid_range(msg: Optional[str], raises: bool, min_val: float | Ten
     if raises:
         raise ValueError(err_msg)
     return False
+
+
+# --- FAST SHAPE CHECK HELPERS ---
+
+
+def _fast_check_shape_star2(x: Tensor, raises: bool = True) -> bool:
+    # Check x.shape[-1] == 2
+    if x.shape[-1] != 2:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 2]. Got {x.shape}")
+        return False
+    return True
+
+
+def _fast_check_shape_star4(x: Tensor, raises: bool = True) -> bool:
+    if x.shape[-1] != 4:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 4]. Got {x.shape}")
+        return False
+    return True
+
+
+def _fast_check_shape_star8(x: Tensor, raises: bool = True) -> bool:
+    if x.shape[-1] != 8:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 8]. Got {x.shape}")
+        return False
+    return True

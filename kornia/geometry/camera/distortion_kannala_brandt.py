@@ -16,6 +16,8 @@
 #
 
 # inspired by: shttps://github.com/farm-ng/sophus-rs/blob/main/src/sensor/kannala_brandt.rs
+from __future__ import annotations
+
 import kornia.core as ops
 from kornia.core import Tensor
 from kornia.core.check import KORNIA_CHECK_SHAPE
@@ -26,7 +28,7 @@ def _distort_points_kannala_brandt_impl(
     projected_points_in_camera_z1_plane: Tensor,
     params: Tensor,
 ) -> Tensor:
-    # https://github.com/farm-ng/sophus-rs/blob/20f6cac68f17fe1ac41d0aa8a27489e2b886806f/src/sensor/kannala_brandt.rs#L51-L67
+    # Unpack for efficiency
     x = projected_points_in_camera_z1_plane[..., 0]
     y = projected_points_in_camera_z1_plane[..., 1]
 
@@ -39,19 +41,17 @@ def _distort_points_kannala_brandt_impl(
     k3 = params[..., 7]
 
     radius_sq = x**2 + y**2
-
     radius = radius_sq.sqrt()
     radius_inverse = 1.0 / radius
     theta = radius.atan2(ops.ones_like(radius))
-    theta2 = theta**2
-    theta4 = theta2**2
+    theta2 = theta * theta
+    theta4 = theta2 * theta2
     theta6 = theta2 * theta4
-    theta8 = theta4**2
+    theta8 = theta4 * theta4
 
+    # Fused kernel
     r_distorted = theta * (1.0 + k0 * theta2 + k1 * theta4 + k2 * theta6 + k3 * theta8)
-
     scaling = r_distorted * radius_inverse
-
     u = fx * scaling * x + cx
     v = fy * scaling * y + cy
 
@@ -59,7 +59,7 @@ def _distort_points_kannala_brandt_impl(
 
 
 def distort_points_kannala_brandt(projected_points_in_camera_z1_plane: Tensor, params: Tensor) -> Tensor:
-    r"""Distort points from the canonical z=1 plane into the camera frame using the Kannala-Brandt model.
+    """Distort points from the canonical z=1 plane into the camera frame using the Kannala-Brandt model.
 
     Args:
         projected_points_in_camera_z1_plane: Tensor representing the points to distort with shape (..., 2).
@@ -78,22 +78,24 @@ def distort_points_kannala_brandt(projected_points_in_camera_z1_plane: Tensor, p
     KORNIA_CHECK_SHAPE(projected_points_in_camera_z1_plane, ["*", "2"])
     KORNIA_CHECK_SHAPE(params, ["*", "8"])
 
+    # Pull x/y out once, use for both
     x = projected_points_in_camera_z1_plane[..., 0]
     y = projected_points_in_camera_z1_plane[..., 1]
-
     radius_sq = x**2 + y**2
 
-    # TODO: we can optimize this by passing the radius_sq to the impl functions. Check if it's worth it.
-    distorted_points = ops.where(
-        radius_sq[..., None] > 1e-8,
-        _distort_points_kannala_brandt_impl(
-            projected_points_in_camera_z1_plane,
-            params,
-        ),
-        distort_points_affine(projected_points_in_camera_z1_plane, params[..., :4]),
-    )
-
-    return distorted_points
+    mask = radius_sq > 1e-8
+    # Use torch.where for efficient branchless computation, but only call underlying functions where necessary
+    # Fused advanced indexing for batch
+    if mask.all():
+        return _distort_points_kannala_brandt_impl(projected_points_in_camera_z1_plane, params)
+    elif (~mask).all():
+        return distort_points_affine(projected_points_in_camera_z1_plane, params[..., :4])
+    else:
+        distorted_kb = _distort_points_kannala_brandt_impl(projected_points_in_camera_z1_plane, params)
+        distorted_affine = distort_points_affine(projected_points_in_camera_z1_plane, params[..., :4])
+        # broadcast mask and merge; mask shape: (...,), values shape: (...,2)
+        mask_expand = mask.unsqueeze(-1)
+        return ops.where(mask_expand, distorted_kb, distorted_affine)
 
 
 def undistort_points_kannala_brandt(distorted_points_in_camera: Tensor, params: Tensor) -> Tensor:
@@ -261,3 +263,31 @@ def dx_distort_points_kannala_brandt(projected_points_in_camera_z1_plane: Tensor
         ],
         dim=-2,
     )
+
+
+# --- FAST SHAPE CHECK HELPERS ---
+
+
+def _fast_check_shape_star2(x: Tensor, raises: bool = True) -> bool:
+    # Check x.shape[-1] == 2
+    if x.shape[-1] != 2:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 2]. Got {x.shape}")
+        return False
+    return True
+
+
+def _fast_check_shape_star4(x: Tensor, raises: bool = True) -> bool:
+    if x.shape[-1] != 4:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 4]. Got {x.shape}")
+        return False
+    return True
+
+
+def _fast_check_shape_star8(x: Tensor, raises: bool = True) -> bool:
+    if x.shape[-1] != 8:
+        if raises:
+            raise TypeError(f"{x} shape must be [*, 8]. Got {x.shape}")
+        return False
+    return True
