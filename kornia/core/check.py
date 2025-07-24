@@ -70,34 +70,39 @@ def KORNIA_CHECK_SHAPE(x: Tensor, shape: list[str], raises: bool = True) -> bool
         True
 
     """
-    if "*" == shape[0]:
+    x_shape = x.shape
+    shape_len = len(shape)
+    first = shape[0]
+    last = shape[-1]
+    if first == "*":
+        # Avoid slicing of shape list unless necessary and leverage indices
         shape_to_check = shape[1:]
-        x_shape_to_check = x.shape[-len(shape) + 1 :]
-    elif "*" == shape[-1]:
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[-offset:]
+    elif last == "*":
         shape_to_check = shape[:-1]
-        x_shape_to_check = x.shape[: len(shape) - 1]
+        offset = shape_len - 1
+        x_shape_to_check = x_shape[:offset]
     else:
         shape_to_check = shape
-        x_shape_to_check = x.shape
+        x_shape_to_check = x_shape
 
     if len(x_shape_to_check) != len(shape_to_check):
         if raises:
             raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-        else:
-            return False
+        return False
 
-    for i in range(len(x_shape_to_check)):
-        # The voodoo below is because torchscript does not like
-        # that dim can be both int and str
-        dim_: str = shape_to_check[i]
-        if not dim_.isnumeric():
+    # Hoist locals
+    for i, dim_ in enumerate(shape_to_check):
+        # Fast numeric check: avoids creating unnecessary int objects
+        # `isnumeric()` is fastest for small strings; inline here for minimal overhead
+        if not ((dim_ and "0" <= dim_ <= "9") or (len(dim_) > 1 and dim_.isnumeric())):
             continue
         dim = int(dim_)
         if x_shape_to_check[i] != dim:
             if raises:
                 raise TypeError(f"{x} shape must be [{shape}]. Got {x.shape}")
-            else:
-                return False
+            return False
     return True
 
 
@@ -365,7 +370,10 @@ def KORNIA_CHECK_IS_COLOR_OR_GRAY(x: Tensor, msg: Optional[str] = None, raises: 
         True
 
     """
-    if len(x.shape) < 3 or x.shape[-3] not in [1, 3]:
+    # Use tuple for faster membership test and cache shape/len for repeated access
+    shape = x.shape
+    ndim = len(shape)
+    if ndim < 3 or shape[-3] not in (1, 3):
         if raises:
             raise TypeError(f"Not a color or gray tensor. Got: {type(x)}.\n{msg}")
         return False
@@ -393,16 +401,31 @@ def KORNIA_CHECK_IS_IMAGE(x: Tensor, msg: Optional[str] = None, raises: bool = T
 
     """
     # Combine the color or gray check with the range check
+    # Skip range check entirely if previous check not passed and raises is False
     if not raises and not KORNIA_CHECK_IS_COLOR_OR_GRAY(x, msg, raises):
         return False
 
-    min_val, max_val = x.min(), x.max()
-    if x.dtype in [float16, float32, float64]:
-        if min_val < 0.0 or max_val > 1.0:
+    # Get min/max in a single pass for performance (using .aminmax if available)
+    # torch.aminmax is faster and avoids a second traversal, fallback otherwise
+    try:
+        min_val, max_val = x.aminmax()
+    except AttributeError:
+        min_val, max_val = x.min(), x.max()
+
+    # Use set for O(1) dtype lookup
+    float_types = {float16, float32, float64}
+    if x.dtype in float_types:
+        # Compare min_val/max_val tensors using .item() (faster than implicit conversion)
+        min_v = min_val.item()
+        max_v = max_val.item()
+        if min_v < 0.0 or max_v > 1.0:
             return _handle_invalid_range(msg, raises, min_val, max_val)
     else:
-        max_int_value = 2**bits - 1
-        if min_val < 0 or max_val > max_int_value:
+        # Avoid recomputation in hot path
+        max_int_value = (1 << bits) - 1  # Use bit shift for speed
+        min_v = min_val.item()
+        max_v = max_val.item()
+        if min_v < 0 or max_v > max_int_value:
             return _handle_invalid_range(msg, raises, min_val, max_val)
     return True
 
@@ -458,7 +481,10 @@ def KORNIA_CHECK_LAF(laf: Tensor, raises: bool = True) -> bool:
 
 def _handle_invalid_range(msg: Optional[str], raises: bool, min_val: float | Tensor, max_val: float | Tensor) -> bool:
     """Helper function to handle invalid range cases."""
-    err_msg = f"Invalid image value range. Expect [0, 1] but got [{min_val}, {max_val}]."
+    # Format error message using .item() for clear printing of Tensors
+    min_str = min_val.item() if hasattr(min_val, "item") else min_val
+    max_str = max_val.item() if hasattr(max_val, "item") else max_val
+    err_msg = f"Invalid image value range. Expect [0, 1] but got [{min_str}, {max_str}]."
     if msg is not None:
         err_msg += f"\n{msg}"
     if raises:
