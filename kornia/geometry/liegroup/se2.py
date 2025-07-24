@@ -397,8 +397,13 @@ class Se2(Module):
             x: the x-axis translation.
 
         """
+        # Directly inline construction to avoid extra method call and tensor allocation overhead.
+        # This avoids the stack frame and extra method abstraction in hot code.
         zs = zeros_like(x)
-        return cls.trans(x, zs)
+        KORNIA_CHECK(x.shape == zs.shape and x.device == zs.device)
+        batch_size = x.shape[0] if len(x.shape) > 0 else None
+        rotation = So2.identity(batch_size, x.device, x.dtype)
+        return cls(rotation, stack((x, zs), -1))
 
     @classmethod
     def trans_y(cls, y: Tensor) -> Se2:
